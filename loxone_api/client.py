@@ -1,310 +1,266 @@
-"""Async client for the Loxone Miniserver websocket API."""
+"""
+loxone_api/client.py
+
+Async client for a Loxone Miniserver focusing on:
+- getkey2/<user>
+- getjwt/{hash}/{user}/{permission}/{uuid}/{info}
+
+Notes:
+- This implements the *HTTP JSON* flow using /jdev/ endpoints.
+- Some Miniservers require the *encrypted websocket* flow for getjwt; if yours returns 400,
+  you will need to implement keyexchange + encrypted commands via websocket (/ws/rfc6455).
+"""
 
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import json
 import logging
-import time
+import ssl
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional, Tuple
 from urllib.parse import urljoin
-import contextlib
 
 import aiohttp
 
-from .const import (
-    DEFAULT_PORT,
-    DEFAULT_STRUCT_PATH,
-    DEFAULT_TLS_PORT,
-    DEFAULT_WS_PATH,
-    PING_INTERVAL,
-    RECONNECT_DELAY,
-    TOKEN_REFRESH_THRESHOLD,
-)
-from .models import CallbackType, LoxoneControl, LoxoneState
-from .auth import build_getjwt_path, JwtRequestParams
+from .auth import JwtRequestParams, build_getjwt_path_from_getkey2
 
-_LOGGER = logging.getLogger(__name__)
+log = logging.getLogger(__name__)
 
 
-@dataclass
-class TokenInfo:
-    """Authentication token and expiry information."""
-
-    token: str
-    valid_until: float
+class LoxoneAuthError(RuntimeError):
+    pass
 
 
-class LoxoneApiError(Exception):
-    """Base error for the Loxone API."""
+class LoxoneRequestError(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True)
+class GetKey2Result:
+    key: str
+    salt: str
+    hashAlg: str
 
 
 class LoxoneClient:
-    """Handle connectivity and subscription to a Loxone Miniserver."""
+    """
+    Minimal async client for Loxone Miniserver authentication and basic requests.
+    """
 
     def __init__(
         self,
-        host: str,
-        username: str,
-        password: str,
         *,
-        port: int | None = None,
-        use_tls: bool = True,
-        verify_ssl: bool = True,
-        session: aiohttp.ClientSession | None = None,
-    ) -> None:
+        host: str,
+        user: str,
+        password: str,
+        port: int = 443,
+        verify_tls: bool = True,
+        timeout_s: float = 15.0,
+        session: Optional[aiohttp.ClientSession] = None,
+    ):
         self.host = host
-        self.username = username
+        self.port = port
+        self.user = user
         self.password = password
-        # Enforce TLS/WSS-only operation for security
-        if not use_tls:
-            raise ValueError("Only TLS/WSS (HTTPS/WSS) is supported")
-        self.port = port if port is not None else DEFAULT_TLS_PORT
-        self.use_tls = True
-        self.verify_ssl = verify_ssl
-        self._external_session = session
-        self._session: aiohttp.ClientSession | None = None
-        self._token: TokenInfo | None = None
-        self._controls: Dict[str, LoxoneControl] = {}
-        self._state_callbacks: List[CallbackType] = []
-        self._ws: aiohttp.ClientWebSocketResponse | None = None
-        self._listen_task: asyncio.Task | None = None
-        self._closing = False
+        self.verify_tls = verify_tls
+        self.timeout_s = timeout_s
 
-    @property
-    def base_url(self) -> str:
-        scheme = "https" if self.use_tls else "http"
-        return f"{scheme}://{self.host}:{self.port}"
+        self.base_url = f"https://{self.host}:{self.port}/"
+        self._session_external = session is not None
+        self._session: Optional[aiohttp.ClientSession] = session
 
-    async def async_start(self) -> Dict[str, LoxoneControl]:
-        """Start the connection to the miniserver and return controls."""
+        self._jwt: Optional[str] = None
 
+    async def __aenter__(self) -> "LoxoneClient":
         await self._ensure_session()
-        await self._ensure_token()
-        await self._load_structure()
-        await self._ensure_websocket()
-        return self._controls
+        return self
 
-    async def async_stop(self) -> None:
-        """Close the websocket and session."""
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        await self.close()
 
-        self._closing = True
-        if self._listen_task:
-            self._listen_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._listen_task
-        if self._ws and not self._ws.closed:
-            await self._ws.close()
-        if self._session and not self._external_session:
+    async def close(self) -> None:
+        if self._session and not self._session_external:
             await self._session.close()
+        self._session = None
 
     async def _ensure_session(self) -> None:
-        if self._session is None:
-            self._session = aiohttp.ClientSession()
-
-    async def _ensure_token(self) -> None:
-        if self._token and self._token.valid_until - TOKEN_REFRESH_THRESHOLD > time.time():
+        if self._session:
             return
-        await self._authenticate()
 
-    async def _authenticate(self) -> None:
-        """Authenticate with the miniserver to obtain a token.
+        timeout = aiohttp.ClientTimeout(total=self.timeout_s)
 
-        The Miniserver exposes a token endpoint that accepts basic authentication and
-        returns a JSON payload containing the JWT and expiry timestamp. The endpoint
-        is documented in the vendor guides bundled with this repository.
-        """
-
-        _LOGGER.debug("Authenticating using encrypted getjwt flow")
-
-        assert self._session
-        # Use getkey2 and HMAC-based getjwt path for encrypted-command compatible Miniserver
-        key = await self._fetch_key()
-        print("key for auth:", key)
-        
-        path, dbg = build_getjwt_path(self.username, self.password, key, JwtRequestParams())
-        _LOGGER.debug("JWT build debug: %s", {k: dbg[k] for k in ("user", "permission", "uuid", "info_enc", "pw_hash", "key_bytes_len", "key_bytes_hex", "hmac_hex", "path")})
-        url = urljoin(self.base_url, path)
-        _LOGGER.debug("Auth URL: %s", url)
-        async with self._session.get(url, ssl=self.verify_ssl) as resp:
-            body = await resp.text()
-
-        if resp.status != 200:
-            _LOGGER.error("Authentication failed with status %s: %s", resp.status, body)
-            raise LoxoneApiError(f"Failed to authenticate: {resp.status}")
-
-        print("Authentication successful")
-
-        try:
-            payload = json.loads(body)
-        except json.JSONDecodeError as err:
-            _LOGGER.error("Authentication response was not valid JSON: %s", body)
-            raise LoxoneApiError("Invalid authentication response") from err
-
-        # getjwt typically returns LL.value with token and optional controlInfo.validUntil
-        token_value = payload.get("LL", {}).get("value") or payload.get("token")
-        valid_until = (
-            payload.get("LL", {}).get("controlInfo", {}).get("validUntil")
-            or payload.get("validUntil", 0)
-        )
-        if not token_value:
-            _LOGGER.error("Authentication response missing token; payload: %s", payload)
-            raise LoxoneApiError("No token returned from Miniserver")
-        if not valid_until:
-            # default validity to 30 minutes if the payload does not advertise it
-            valid_until = time.time() + 1800
-        self._token = TokenInfo(token=token_value, valid_until=float(valid_until))
-        _LOGGER.debug("Authenticated with token expiring at %s", self._token.valid_until)
-
-    async def _fetch_key(self) -> str:
-        """Fetch the temporary key required to hash credentials."""
-
-        print("Fetching key from miniserver...")
-
-        assert self._session
-        # Prefer the newer getkey2 endpoint which returns keys suitable for encrypted-command flows
-        url = urljoin(self.base_url, f"/jdev/sys/getkey2/{self.username}")
-        async with self._session.get(url, ssl=self.verify_ssl) as resp:
-            body = await resp.text()
-
-        if resp.status != 200:
-            _LOGGER.error("Key retrieval failed with status %s: %s", resp.status, body)
-            raise LoxoneApiError(f"Failed to fetch key: {resp.status}")
-
-        print("Key fetched successfully")
-
-        try:
-            payload = json.loads(body)
-            print("Payload:", payload)
-        except json.JSONDecodeError as err:
-            _LOGGER.error("Key response was not valid JSON: %s", body)
-            raise LoxoneApiError("Invalid key response") from err
-
-        val = payload.get("LL", {}).get("value")
-        # Newer Miniservers return an object with the actual key under 'key'
-        if isinstance(val, dict):
-            key = val.get("key") or val.get("value")
-            _LOGGER.debug("Parsed getkey2 value object, extracted key present: %s", bool(key))
+        if self.verify_tls:
+            ssl_context = ssl.create_default_context()
         else:
-            key = val
+            ssl_context = ssl.create_default_context()
+            ssl_context.check_hostname = False
+            ssl_context.verify_mode = ssl.CERT_NONE
 
-        if not key:
-            _LOGGER.error("Key response missing value; payload: %s", payload)
-            raise LoxoneApiError("No key returned from Miniserver")
+        connector = aiohttp.TCPConnector(ssl=ssl_context)
+        self._session = aiohttp.ClientSession(timeout=timeout, connector=connector)
 
-        _LOGGER.debug("Key retrieved (length=%s)", len(str(key)))
-        return str(key)
+    def _full_url(self, path: str) -> str:
+        return urljoin(self.base_url, path.lstrip("/"))
 
-    async def _load_structure(self) -> None:
-        """Load the structure file describing controls."""
+    async def _get_text(self, path: str) -> Tuple[int, str]:
+        await self._ensure_session()
+        assert self._session is not None
 
-        assert self._session
-        await self._ensure_token()
-        headers = {"Authorization": f"Bearer {self._token.token}"} if self._token else None
-        url = urljoin(self.base_url, DEFAULT_STRUCT_PATH)
-        async with self._session.get(url, headers=headers, auth=None, ssl=self.verify_ssl) as resp:
-            if resp.status != 200:
-                raise LoxoneApiError(f"Failed to download structure file: {resp.status}")
-            structure = await resp.json(content_type=None)
+        url = self._full_url(path)
+        log.debug("GET %s", url)
 
-        controls: Dict[str, LoxoneControl] = {}
-        for uuid, control in structure.get("controls", {}).items():
-            controls[uuid] = LoxoneControl(
-                uuid=uuid,
-                name=control.get("name", uuid),
-                type=control.get("type", ""),
-                room=structure.get("rooms", {}).get(str(control.get("room")), {}).get("name"),
-                category=structure.get("cats", {}).get(str(control.get("cat")), {}).get("name"),
-                states=control.get("states", {}),
-                details=control,
-            )
-        self._controls = controls
-        _LOGGER.debug("Loaded %s controls from structure", len(self._controls))
+        async with self._session.get(url) as resp:
+            text = await resp.text()
+            return resp.status, text
 
-    async def _ensure_websocket(self) -> None:
-        if self._ws and not self._ws.closed:
-            return
-        assert self._session
-        await self._ensure_token()
-        url = f"{'wss' if self.use_tls else 'ws'}://{self.host}:{self.port}{DEFAULT_WS_PATH}?auth={self._token.token}"
-        self._ws = await self._session.ws_connect(url, heartbeat=PING_INTERVAL, ssl=self.verify_ssl)
-        self._listen_task = asyncio.create_task(self._listen())
-
-    def register_callback(self, callback: CallbackType) -> None:
-        """Register a callback for state updates."""
-
-        self._state_callbacks.append(callback)
-
-    async def send_control_command(self, uuid: str, command: str, value: Any | None = None) -> None:
-        """Send a control command to the miniserver."""
-
-        await self._ensure_websocket()
-        payload = {"control": uuid, "command": command, "value": value}
-        assert self._ws
-        await self._ws.send_json(payload)
-
-    async def _listen(self) -> None:
-        """Listen for websocket messages and dispatch callbacks."""
-
-        assert self._ws
-        while not self._ws.closed and not self._closing:
-            try:
-                msg = await self._ws.receive()
-            except aiohttp.ClientError as err:
-                _LOGGER.warning("Websocket error: %s", err)
-                break
-
-            if msg.type == aiohttp.WSMsgType.TEXT:
-                await self._handle_message(msg.data)
-            elif msg.type == aiohttp.WSMsgType.BINARY:
-                await self._handle_binary(msg.data)
-            elif msg.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
-                _LOGGER.warning("Websocket closed: %s", msg.type)
-                break
-
-        if not self._closing:
-            await asyncio.sleep(RECONNECT_DELAY)
-            await self._ensure_websocket()
-
-    async def _handle_message(self, data: str) -> None:
-        """Parse incoming JSON messages."""
-
+    async def _get_json(self, path: str) -> Tuple[int, Dict[str, Any]]:
+        status, text = await self._get_text(path)
         try:
-            payload = json.loads(data)
-        except json.JSONDecodeError:
-            _LOGGER.debug("Received non JSON message: %s", data)
-            return
+            data = aiohttp.helpers.json.loads(text)
+        except Exception:
+            # Not JSON (often HTML errors)
+            raise LoxoneRequestError(f"Non-JSON response (status {status}): {text}")
 
-        # State updates arrive as key/value pairs where key is the uuid
-        for key, value in payload.items():
-            if key in self._controls:
-                state = LoxoneState(control_uuid=key, state="value", value=value)
-                for cb in self._state_callbacks:
-                    cb(state)
+        return status, data
 
-    async def _handle_binary(self, data: bytes) -> None:
-        """Handle binary messages.
-
-        Binary payloads are small frames carrying state updates. They follow the
-        documented event format and include the control UUID and the updated
-        value. For simplicity we treat the payload as a UTF-8 string and try to
-        decode it.
+    @staticmethod
+    def _extract_ll_value(payload: Dict[str, Any]) -> Any:
         """
+        Loxone typically responds with: {"LL": {"control": "...", "code": "200", "value": ...}}
+        """
+        ll = payload.get("LL") or {}
+        return ll.get("value")
+
+    @staticmethod
+    def _extract_ll_code(payload: Dict[str, Any]) -> Optional[str]:
+        ll = payload.get("LL") or {}
+        # some firmwares use 'Code', some use 'code'
+        return ll.get("Code") or ll.get("code")
+
+    async def getkey2(self) -> GetKey2Result:
+        """
+        Calls /jdev/sys/getkey2/<user> and returns key/salt/hashAlg.
+        """
+        path = f"/jdev/sys/getkey2/{self.user}"
+        status, payload = await self._get_json(path)
+
+        if status != 200:
+            raise LoxoneRequestError(f"getkey2 failed with HTTP {status}: {payload}")
+
+        code = self._extract_ll_code(payload)
+        value = self._extract_ll_value(payload)
+
+        log.debug("getkey2 payload: %s", payload)
+
+        if code not in ("200", 200, None):
+            raise LoxoneRequestError(f"getkey2 returned code={code}: {payload}")
+
+        if not isinstance(value, dict):
+            raise LoxoneRequestError(f"getkey2 unexpected value type: {type(value)} {value}")
+
+        key = (value.get("key") or "").strip()
+        salt = (value.get("salt") or "").strip()
+        hash_alg = (value.get("hashAlg") or "SHA1").strip()
+
+        if not key or not salt:
+            raise LoxoneRequestError(f"getkey2 missing key/salt: {value}")
+
+        return GetKey2Result(key=key, salt=salt, hashAlg=hash_alg)
+
+    async def authenticate(
+        self,
+        *,
+        permission: int = 2,
+        uuid: str = "",
+        info: str = "loxone_api",
+    ) -> str:
+        """
+        Authenticates via:
+          1) getkey2/<user>
+          2) getjwt/{hash}/{user}/{permission}/{uuid}/{info}
+
+        Returns JWT token string.
+        """
+        log.debug("Authenticating using getkey2/getjwt flow")
+
+        key2 = await self.getkey2()
+
+        # Build path using correct salt + hashAlg + key decoding
+        key_payload = {"key": key2.key, "salt": key2.salt, "hashAlg": key2.hashAlg}
+        params = JwtRequestParams(permission=permission, uuid=uuid, info=info)
+        jwt_path, dbg = build_getjwt_path_from_getkey2(
+            user=self.user,
+            password=self.password,
+            getkey2_value=key_payload,
+            params=params,
+        )
+
+        # Debug without leaking password
+        log.debug("JWT build debug: %s", dbg)
+        log.debug("Auth URL: %s", self._full_url(jwt_path))
+
+        status, text = await self._get_text(jwt_path)
+
+        if status == 401:
+            raise LoxoneAuthError(f"Authentication failed with status 401: {text}")
+        if status == 400:
+            # Common when Miniserver expects encrypted getjwt; keep message actionable.
+            raise LoxoneAuthError(
+                "Authentication failed with status 400 (Bad Request). "
+                "Your Miniserver likely requires encrypted JWT requests via websocket keyexchange "
+                "(encrypted command flow). Raw response: "
+                + text
+            )
+        if status != 200:
+            raise LoxoneAuthError(f"Authentication failed with status {status}: {text}")
 
         try:
-            decoded = data.decode("utf-8")
-        except UnicodeDecodeError:
-            _LOGGER.debug("Dropped non UTF-8 binary payload")
-            return
-        await self._handle_message(decoded)
+            payload = aiohttp.helpers.json.loads(text)
+        except Exception:
+            raise LoxoneAuthError(f"Authentication response was not JSON: {text}")
 
-    def get_control(self, uuid: str) -> Optional[LoxoneControl]:
-        """Return a control from the structure."""
+        ll_value = self._extract_ll_value(payload)
+        if not ll_value or not isinstance(ll_value, str):
+            raise LoxoneAuthError(f"getjwt returned no token: {payload}")
 
-        return self._controls.get(uuid)
+        self._jwt = ll_value
+        return ll_value
 
     @property
-    def controls(self) -> Dict[str, LoxoneControl]:
-        return self._controls
+    def jwt(self) -> Optional[str]:
+        return self._jwt
+
+    async def jdev_get(self, control_path: str) -> Dict[str, Any]:
+        """
+        Convenience: call an arbitrary /jdev/... endpoint and return parsed JSON.
+        Example:
+          await client.jdev_get("sps/io/SomeControl")
+        """
+        if not control_path.startswith("/"):
+            control_path = "/" + control_path
+        if not control_path.startswith("/jdev/"):
+            control_path = "/jdev/" + control_path.lstrip("/")
+
+        status, payload = await self._get_json(control_path)
+        if status != 200:
+            raise LoxoneRequestError(f"Request failed HTTP {status}: {payload}")
+        return payload
+
+
+# Simple manual test helper:
+async def _demo():
+    import getpass
+
+    host = "192.168.1.110"
+    user = "loxws2"
+    password = getpass.getpass("Password: ")
+
+    logging.basicConfig(level=logging.DEBUG)
+
+    async with LoxoneClient(host=host, user=user, password=password, verify_tls=False) as c:
+        token = await c.authenticate(permission=2, info="loxone_api_demo")
+        print("JWT:", token[:20] + "...")
+
+
+if __name__ == "__main__":
+    asyncio.run(_demo())

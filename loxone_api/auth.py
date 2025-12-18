@@ -6,50 +6,66 @@ import logging
 import re
 import uuid as uuidlib
 from dataclasses import dataclass
+from typing import Any, Dict, Tuple
 from urllib.parse import quote
 
 log = logging.getLogger(__name__)
-
 _HEX_RE = re.compile(r"^[0-9a-fA-F]+$")
-
-
-def sha1_hex(data: bytes) -> str:
-    return hashlib.sha1(data).hexdigest()
 
 
 def _looks_like_hex(s: str) -> bool:
     return bool(s) and (len(s) % 2 == 0) and bool(_HEX_RE.match(s))
 
 
-def decode_key_to_bytes(key_str: str) -> bytes:
-    """
-    Loxone 'getkey2' sometimes comes back as:
-      - hex bytes (e.g. 'A1B2...')
-      - hex of ASCII that itself is hex (double-encoded)
-    This function tries to decode both safely.
-    """
-    k = key_str.strip()
+def _hash_hex(hash_alg: str, s: str) -> str:
+    b = s.encode("utf-8")
+    alg = hash_alg.upper()
+    if alg == "SHA256":
+        return hashlib.sha256(b).hexdigest()
+    if alg == "SHA1":
+        return hashlib.sha1(b).hexdigest()
+    raise ValueError(f"Unsupported hashAlg: {hash_alg}")
 
-    # Case 1: not hex at all -> treat as UTF-8 bytes
+
+def _hmac_hex(hash_alg: str, key_bytes: bytes, msg: str) -> str:
+    m = msg.encode("utf-8")
+    alg = hash_alg.upper()
+    if alg == "SHA256":
+        return hmac.new(key_bytes, m, hashlib.sha256).hexdigest()
+    if alg == "SHA1":
+        return hmac.new(key_bytes, m, hashlib.sha1).hexdigest()
+    raise ValueError(f"Unsupported hashAlg: {hash_alg}")
+
+
+def decode_getkey2_key_to_hmac_key_bytes(key_hex: str) -> Tuple[bytes, str]:
+    """
+    Loxone getkey2 returns 'key' as a hex string.
+    For many miniservers, that hex decodes to ASCII characters (also hex-like),
+    and Loxone expects you to use the ASCII string as the HMAC key.
+
+    Returns: (key_bytes_for_hmac, key_ascii_for_debug)
+    """
+    k = (key_hex or "").strip()
     if not _looks_like_hex(k):
-        return k.encode("utf-8")
+        # Unexpected, but handle gracefully
+        return k.encode("utf-8"), k
 
+    # First decode the response hex to bytes
     b1 = bytes.fromhex(k)
 
-    # If b1 is ASCII text and that ASCII text is also hex, decode again.
+    # Try interpret as ASCII (most common)
     try:
-        as_text = b1.decode("ascii").strip()
-        if _looks_like_hex(as_text):
-            return bytes.fromhex(as_text)
+        key_ascii = b1.decode("ascii").strip()
+        # Use the ASCII characters as key material
+        return key_ascii.encode("ascii"), key_ascii
     except UnicodeDecodeError:
-        pass
-
-    return b1
+        # Fallback to raw bytes
+        return b1, b1.hex()
 
 
 @dataclass(frozen=True)
 class JwtRequestParams:
-    permission: int = 2  # 2=Web is typical; some setups use 4=App
+    permission: int = 2  # 2=Web, 4=App (depending on your use-case)
     uuid: str = ""
     info: str = "loxone_api"
 
@@ -58,26 +74,42 @@ class JwtRequestParams:
         return JwtRequestParams(permission=self.permission, uuid=uid, info=self.info)
 
 
-def build_getjwt_path(user: str, password: str, key_str: str, params: JwtRequestParams) -> tuple[str, dict]:
+def build_getjwt_path_from_getkey2(
+    user: str,
+    password: str,
+    getkey2_value: Dict[str, Any],
+    params: JwtRequestParams,
+) -> Tuple[str, Dict[str, Any]]:
     """
-    Returns (path, debug_dict)
+    getkey2_value is the dict under LL.value, e.g.
+    {
+      "key": "...",
+      "salt": "...",
+      "hashAlg": "SHA256"
+    }
     """
     user_clean = user.strip()
-    # Avoid accidental whitespace/newlines from env vars etc.
     password_clean = password.rstrip("\r\n")
 
-    key_bytes = decode_key_to_bytes(key_str)
-    pw_hash = sha1_hex(password_clean.encode("utf-8"))
+    key_hex = (getkey2_value.get("key") or "").strip()
+    salt = (getkey2_value.get("salt") or "").strip()
+    hash_alg = (getkey2_value.get("hashAlg") or "SHA1").strip()
 
-    msg = f"{user_clean}:{pw_hash}".encode("utf-8")
-    hmac_hex = hmac.new(key_bytes, msg, hashlib.sha1).hexdigest()
+    if not key_hex or not salt:
+        raise ValueError(f"Invalid getkey2 value (missing key/salt): {getkey2_value}")
+
+    # pwHash = UPPER( HASH("{password}:{userSalt}") with hashAlg )
+    pw_hash = _hash_hex(hash_alg, f"{password_clean}:{salt}").upper()
+
+    # hash = HMAC(hashAlg, key, "{user}:{pwHash}")
+    hmac_key_bytes, key_ascii_dbg = decode_getkey2_key_to_hmac_key_bytes(key_hex)
+    msg = f"{user_clean}:{pw_hash}"
+    auth_hmac = _hmac_hex(hash_alg, hmac_key_bytes, msg)
 
     p = params.with_defaults()
-
-    # info must be URL-encoded
     info_enc = quote(p.info, safe="")
 
-    path = f"/jdev/sys/getjwt/{hmac_hex}/{user_clean}/{p.permission}/{p.uuid}/{info_enc}"
+    path = f"/jdev/sys/getjwt/{auth_hmac}/{user_clean}/{p.permission}/{p.uuid}/{info_enc}"
 
     debug = {
         "user": user_clean,
@@ -85,12 +117,16 @@ def build_getjwt_path(user: str, password: str, key_str: str, params: JwtRequest
         "uuid": p.uuid,
         "info": p.info,
         "info_enc": info_enc,
+        "hash_alg": hash_alg,
+        "salt": salt,
         "pw_hash": pw_hash,
-        "msg_utf8_hex": msg.hex(),
-        "key_str": key_str,
-        "key_bytes_hex": key_bytes.hex(),
-        "key_bytes_len": len(key_bytes),
-        "hmac_hex": hmac_hex,
+        "pw_hash_len": len(pw_hash),
+        "key_hex": key_hex,
+        "key_ascii_dbg": key_ascii_dbg[:24] + ("..." if len(key_ascii_dbg) > 24 else ""),
+        "hmac_key_len": len(hmac_key_bytes),
+        "auth_hmac": auth_hmac,
+        "auth_hmac_len": len(auth_hmac),
+        "msg": msg,
         "path": path,
     }
     return path, debug

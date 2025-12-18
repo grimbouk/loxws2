@@ -1,5 +1,3 @@
-"""Command line shim for streaming events from a Loxone Miniserver."""
-
 from __future__ import annotations
 
 import argparse
@@ -7,106 +5,127 @@ import asyncio
 import getpass
 import logging
 import sys
-import signal
-import time
-from typing import Iterable
+from typing import Optional
 
-from .client import LoxoneClient
-from .models import LoxoneState
-
-_LOGGER = logging.getLogger(__name__)
+from .client import LoxoneClient, LoxoneAuthError, LoxoneRequestError
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Connect to a Loxone Miniserver and stream events to stdout.",
+    p = argparse.ArgumentParser(
+        prog="python -m loxone_api.cli",
+        description="Authenticate to a Loxone Miniserver and fetch a JWT using getkey2/getjwt.",
     )
-    parser.add_argument("host", help="Hostname or IP of the Miniserver")
-    parser.add_argument("username", help="Username for authentication")
-    parser.add_argument("password", nargs="?", help="Password for authentication (will prompt if omitted)")
-    parser.add_argument("--port", type=int, help="Port of the Miniserver (defaults to 443)")
-    parser.add_argument("--no-verify-ssl", action="store_true", help="Skip TLS certificate verification")
-    parser.add_argument(
-        "--list-controls",
+
+    p.add_argument("host", help="Miniserver host or IP (e.g. 192.168.1.110)")
+    p.add_argument("user", help="Loxone username")
+    p.add_argument(
+        "password",
+        nargs="?",
+        default=None,
+        help="Password (optional). If omitted, you will be prompted securely.",
+    )
+
+    p.add_argument(
+        "--port",
+        type=int,
+        default=443,
+        help="Miniserver HTTPS port (default: 443)",
+    )
+    p.add_argument(
+        "--no-verify-ssl",
         action="store_true",
-        help="Print discovered controls when connecting",
+        help="Disable TLS certificate verification (useful for self-signed certs).",
     )
-    parser.add_argument(
+    p.add_argument(
         "--verbose",
         action="store_true",
-        help="Enable debug logging for troubleshooting",
-    )
-    return parser
-
-
-def _format_control_listing(controls: Iterable) -> str:
-    lines = ["Discovered controls:"]
-    for control in sorted(controls, key=lambda c: c.name.lower()):
-        label = control.name
-        if control.room:
-            label += f" ({control.room})"
-        lines.append(f"- {label} [{control.uuid}] type={control.type}")
-    return "\n".join(lines)
-
-
-def _format_state(state: LoxoneState, client: LoxoneClient) -> str:
-    control = client.get_control(state.control_uuid)
-    label = control.name if control else state.control_uuid
-    return f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {label}: {state.value}"
-
-
-async def _run(args: argparse.Namespace) -> None:
-    password = args.password or getpass.getpass("Password: ")
-    print(password)
-    client = LoxoneClient(
-        args.host,
-        args.username,
-        password,
-        port=args.port,
-        use_tls=True,
-        verify_ssl=not args.no_verify_ssl,
+        help="Enable debug logging.",
     )
 
-    def _on_state(state: LoxoneState) -> None:
-        print(_format_state(state, client))
+    # JWT params
+    p.add_argument(
+        "--permission",
+        type=int,
+        default=2,
+        help="JWT permission (commonly 2=Web, 4=App). Default: 2",
+    )
+    p.add_argument(
+        "--uuid",
+        default="",
+        help="Client UUID to include in getjwt. Default: random generated",
+    )
+    p.add_argument(
+        "--info",
+        default="loxone_api",
+        help="Client info string to include in getjwt. Default: loxone_api",
+    )
 
-    client.register_callback(_on_state)
+    # Optional: keep output clean
+    p.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Only print the token (no extra text).",
+    )
+    return p
 
-    controls = await client.async_start()
-    print("Connected to Loxone Miniserver")
-    if args.list_controls:
-        print(_format_control_listing(controls.values()))
 
-    loop = asyncio.get_running_loop()
-    stop_event = asyncio.Event()
+def _configure_logging(verbose: bool) -> None:
+    level = logging.DEBUG if verbose else logging.INFO
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
 
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, stop_event.set)
+
+def _get_password(provided: Optional[str]) -> str:
+    if provided is not None and provided != "":
+        return provided
+    return getpass.getpass("Password: ")
+
+
+async def _run(args: argparse.Namespace) -> int:
+    password = _get_password(args.password)
+
+    verify_tls = not args.no_verify_ssl
 
     try:
-        await stop_event.wait()
-    finally:
-        await client.async_stop()
+        async with LoxoneClient(
+            host=args.host,
+            port=args.port,
+            user=args.user,
+            password=password,
+            verify_tls=verify_tls,
+        ) as client:
+            token = await client.authenticate(
+                permission=args.permission,
+                uuid=args.uuid,
+                info=args.info,
+            )
+
+            if args.quiet:
+                print(token)
+            else:
+                # Don’t print full token by default
+                preview = token[:24] + "..." if len(token) > 24 else token
+                print(f"JWT: {preview}")
+            return 0
+
+    except (LoxoneAuthError, LoxoneRequestError) as e:
+        logging.getLogger(__name__).error(str(e))
+        return 2
+    except KeyboardInterrupt:
+        return 130
 
 
 def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
 
-    # Configure logging to print to stdout and respect --verbose
-    level = logging.DEBUG if args.verbose else logging.INFO
-    root = logging.getLogger()
-    # Ensure there's a stream handler to stdout with a readable formatter
-    handler = logging.StreamHandler(sys.stdout)
-    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
-    # Replace existing handlers so output is predictable in CLI
-    root.handlers[:] = [handler]
-    root.setLevel(level)
+    _configure_logging(args.verbose)
 
-    try:
-        asyncio.run(_run(args))
-    except KeyboardInterrupt:
-        _LOGGER.info("Shutting down...")
+    # Run async entrypoint
+    rc = asyncio.run(_run(args))
+    raise SystemExit(rc)
 
 
 if __name__ == "__main__":
