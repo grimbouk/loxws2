@@ -17,3 +17,5 @@ pip install .
 3. Restart Home Assistant and configure the integration via the UI, providing the host, credentials, and TLS options.
 
 The integration currently creates entities for lights, sensors, binary sensors, covers, climate controllers, and scenes. Additional platforms can be added by extending the platform files and mapping further control types from the structure file.
+
+Test
