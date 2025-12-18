@@ -116,15 +116,24 @@ class LoxoneClient:
         auth = aiohttp.BasicAuth(self.username, self.password)
         url = urljoin(self.base_url, "/jdev/sys/getjwt")
         async with self._session.get(url, auth=auth, ssl=self.verify_ssl) as resp:
-            if resp.status != 200:
-                raise LoxoneApiError(f"Failed to authenticate: {resp.status}")
-            payload = await resp.json(content_type=None)
+            body = await resp.text()
+
+        if resp.status != 200:
+            _LOGGER.error("Authentication failed with status %s: %s", resp.status, body)
+            raise LoxoneApiError(f"Failed to authenticate: {resp.status}")
+
+        try:
+            payload = json.loads(body)
+        except json.JSONDecodeError as err:
+            _LOGGER.error("Authentication response was not valid JSON: %s", body)
+            raise LoxoneApiError("Invalid authentication response") from err
 
         token_value = payload.get("LL", {}).get("value") or payload.get("token")
         valid_until = payload.get("LL", {}).get("controlInfo", {}).get("validUntil") or payload.get(
             "validUntil", 0
         )
         if not token_value:
+            _LOGGER.error("Authentication response missing token; payload: %s", payload)
             raise LoxoneApiError("No token returned from Miniserver")
         if not valid_until:
             # default validity to 30 minutes if the payload does not advertise it

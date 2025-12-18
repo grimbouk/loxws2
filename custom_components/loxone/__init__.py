@@ -29,6 +29,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     hass.data.setdefault(DOMAIN, {})
 
+    _LOGGER.debug(
+        "Setting up Loxone client for host %s (port=%s, tls=%s, verify_ssl=%s)",
+        entry.data[CONF_HOST],
+        entry.data.get(CONF_PORT),
+        entry.data.get(CONF_USE_TLS, True),
+        entry.data.get(CONF_VERIFY_SSL, True),
+    )
+
     client = LoxoneClient(
         host=entry.data[CONF_HOST],
         username=entry.data[CONF_USERNAME],
