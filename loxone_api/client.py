@@ -14,6 +14,7 @@ Notes:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import ssl
 from dataclasses import dataclass
@@ -215,7 +216,7 @@ class LoxoneClient:
             raise LoxoneAuthError(f"Authentication failed with status {status}: {text}")
 
         try:
-            payload = aiohttp.helpers.json.loads(text)
+            payload = json.loads(text)
         except Exception:
             raise LoxoneAuthError(f"Authentication response was not JSON: {text}")
 

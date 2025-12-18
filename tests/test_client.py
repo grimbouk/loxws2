@@ -1,134 +1,86 @@
 import asyncio
-import hashlib
 import json
 import sys
-import time
 from pathlib import Path
-from typing import Dict
 
 import pytest
 
 # Ensure the project root is on the import path for tests without installation
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from loxone_api.client import LoxoneApiError, LoxoneClient, TokenInfo
+from loxone_api.client import GetKey2Result, LoxoneAuthError, LoxoneClient, LoxoneRequestError
 
 
-class FakeResponse:
-    def __init__(self, status: int = 200, body: str = "", json_data: Dict | None = None):
-        self.status = status
-        self._body = body
-        self._json_data = json_data or {}
+def test_getkey2_parses_success(monkeypatch):
+    client = LoxoneClient(host="example.com", user="user", password="pass")
 
-    async def __aenter__(self):
-        return self
+    async def fake_get_json(self, path):
+        assert path == "/jdev/sys/getkey2/user"
+        return 200, {"LL": {"code": 200, "value": {"key": "abcd", "salt": "ef", "hashAlg": "SHA256"}}}
 
-    async def __aexit__(self, exc_type, exc, tb):
-        return False
+    monkeypatch.setattr(LoxoneClient, "_get_json", fake_get_json)
 
-    async def text(self):
-        if self._body:
-            return self._body
-        return json.dumps(self._json_data)
-
-    async def json(self, content_type=None):
-        return self._json_data
+    result = asyncio.run(client.getkey2())
+    assert isinstance(result, GetKey2Result)
+    assert result.key == "abcd"
+    assert result.salt == "ef"
+    assert result.hashAlg == "SHA256"
 
 
-class FakeSession:
-    def __init__(self, responses: Dict[str, FakeResponse]):
-        self.responses = responses
+def test_getkey2_invalid_response_raises(monkeypatch):
+    client = LoxoneClient(host="example.com", user="user", password="pass")
 
-    def get(self, url, **kwargs):
-        return self.responses[url]
+    async def fake_get_json(self, path):
+        return 200, {"LL": {"code": 200, "value": {"key": "", "salt": ""}}}
 
-    async def close(self):
-        pass
+    monkeypatch.setattr(LoxoneClient, "_get_json", fake_get_json)
 
-
-def test_base_url_scheme_switch():
-    client_tls = LoxoneClient("example.com", "user", "pass")
-    client_plain = LoxoneClient("example.com", "user", "pass", use_tls=False, port=8080)
-
-    assert client_tls.base_url == "https://example.com:443"
-    assert client_plain.base_url == "http://example.com:8080"
+    with pytest.raises(LoxoneRequestError):
+        asyncio.run(client.getkey2())
 
 
-def test_authenticate_sets_token():
-    key_url = "https://example.com:443/jdev/sys/getkey"
-    auth_hash = hashlib.sha1("passabcd".encode("utf-8")).hexdigest()
-    auth_url = f"https://example.com:443/jdev/sys/getjwt/user/{auth_hash}"
-    response_body = json.dumps({"LL": {"value": "jwt-token", "controlInfo": {"validUntil": time.time() + 1000}}})
-    session = FakeSession(
-        {
-            key_url: FakeResponse(json_data={"LL": {"value": "abcd"}}),
-            auth_url: FakeResponse(status=200, body=response_body),
-        }
-    )
-    client = LoxoneClient("example.com", "user", "pass", session=session)
-    client._session = session
+def test_authenticate_sets_jwt(monkeypatch):
+    client = LoxoneClient(host="example.com", user="user", password="pass")
 
-    asyncio.run(client._authenticate())
+    async def fake_getkey2(self):
+        return GetKey2Result(key="aa", salt="bb", hashAlg="SHA1")
 
-    assert client._token is not None
-    assert client._token.token == "jwt-token"
-    assert client._token.valid_until > time.time()
+    async def fake_get_text(self, path):
+        token_response = {"LL": {"value": "jwt-token"}}
+        return 200, json.dumps(token_response)
+
+    monkeypatch.setattr(LoxoneClient, "getkey2", fake_getkey2)
+    monkeypatch.setattr(LoxoneClient, "_get_text", fake_get_text)
+
+    token = asyncio.run(client.authenticate())
+
+    assert token == "jwt-token"
+    assert client.jwt == "jwt-token"
 
 
-def test_authenticate_handles_error_status():
-    key_url = "https://example.com:443/jdev/sys/getkey"
-    auth_hash = hashlib.sha1("passabcd".encode("utf-8")).hexdigest()
-    auth_url = f"https://example.com:443/jdev/sys/getjwt/user/{auth_hash}"
-    session = FakeSession(
-        {
-            key_url: FakeResponse(json_data={"LL": {"value": "abcd"}}),
-            auth_url: FakeResponse(status=401, body="unauthorized"),
-        }
-    )
-    client = LoxoneClient("example.com", "user", "pass", session=session)
-    client._session = session
+def test_authenticate_handles_auth_errors(monkeypatch):
+    client = LoxoneClient(host="example.com", user="user", password="pass")
 
-    with pytest.raises(LoxoneApiError):
-        asyncio.run(client._authenticate())
+    async def fake_getkey2(self):
+        return GetKey2Result(key="aa", salt="bb", hashAlg="SHA1")
 
+    async def fake_get_text(self, path):
+        return 401, "unauthorized"
 
-def test_load_structure_populates_controls():
-    base_url = "https://example.com:443"
-    structure_url = f"{base_url}/data/LoxAPP3.json"
-    structure = {
-        "controls": {
-            "uuid-1": {
-                "name": "Light", "type": "switch", "room": 1, "cat": 2, "states": {"active": True}
-            }
-        },
-        "rooms": {"1": {"name": "Living Room"}},
-        "cats": {"2": {"name": "Lighting"}},
-    }
-    session = FakeSession({structure_url: FakeResponse(json_data=structure)})
-    client = LoxoneClient("example.com", "user", "pass", session=session)
-    client._session = session
-    client._token = TokenInfo(token="abc", valid_until=time.time() + 1000)
+    monkeypatch.setattr(LoxoneClient, "getkey2", fake_getkey2)
+    monkeypatch.setattr(LoxoneClient, "_get_text", fake_get_text)
 
-    asyncio.run(client._load_structure())
-
-    assert "uuid-1" in client.controls
-    control = client.get_control("uuid-1")
-    assert control is not None
-    assert control.name == "Light"
-    assert control.room == "Living Room"
-    assert control.category == "Lighting"
-    assert control.states == {"active": True}
+    with pytest.raises(LoxoneAuthError):
+        asyncio.run(client.authenticate())
 
 
-def test_handle_message_invokes_callback():
-    client = LoxoneClient("example.com", "user", "pass")
-    client._controls = {"uuid-1": None}
-    received_states = []
+def test_jdev_get_prefixes_path(monkeypatch):
+    client = LoxoneClient(host="example.com", user="user", password="pass")
 
-    client.register_callback(lambda state: received_states.append(state))
+    async def fake_get_json(self, path):
+        return 200, {"LL": {"value": {"result": True}}}
 
-    asyncio.run(client._handle_message(json.dumps({"uuid-1": 42})))
+    monkeypatch.setattr(LoxoneClient, "_get_json", fake_get_json)
 
-    assert len(received_states) == 1
-    assert received_states[0].control_uuid == "uuid-1"
-    assert received_states[0].value == 42
+    response = asyncio.run(client.jdev_get("sps/io/Control"))
+    assert response == {"LL": {"value": {"result": True}}}

@@ -1,39 +1,102 @@
-import re
-import sys
+import argparse
+import asyncio
+import logging
+from argparse import Namespace
 from pathlib import Path
+import sys
 
 # Ensure the project root is on the import path for tests without installation
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from loxone_api.cli import _format_control_listing, _format_state
-from loxone_api.client import LoxoneClient
-from loxone_api.models import LoxoneControl, LoxoneState
+import loxone_api.cli as cli
 
 
-def test_format_control_listing_orders_and_labels_controls():
-    controls = [
-        LoxoneControl(uuid="2", name="Kitchen Light", type="light", room="Kitchen"),
-        LoxoneControl(uuid="1", name="bath fan", type="fan", room="Bathroom"),
-    ]
+def test_build_parser_includes_expected_arguments():
+    parser = cli._build_parser()
 
-    listing = _format_control_listing(controls)
+    args = parser.parse_args([
+        "example.com",
+        "user",
+        "secret",
+        "--port",
+        "8443",
+        "--no-verify-ssl",
+        "--permission",
+        "4",
+        "--uuid",
+        "custom",
+        "--info",
+        "test",
+        "--quiet",
+        "--verbose",
+    ])
 
-    # Ordered alphabetically (case-insensitive) and includes uuid/type/room
-    assert "Discovered controls:" in listing
-    assert listing.splitlines()[1] == "- bath fan (Bathroom) [1] type=fan"
-    assert listing.splitlines()[2] == "- Kitchen Light (Kitchen) [2] type=light"
+    assert isinstance(args, argparse.Namespace)
+    assert args.host == "example.com"
+    assert args.port == 8443
+    assert args.no_verify_ssl is True
+    assert args.permission == 4
+    assert args.uuid == "custom"
+    assert args.info == "test"
+    assert args.quiet is True
+    assert args.verbose is True
 
 
-def test_format_state_prefers_control_name():
-    client = LoxoneClient("host", "user", "password")
-    client._controls = {
-        "abc": LoxoneControl(uuid="abc", name="Window Sensor", type="sensor"),
-    }
+def test_get_password_prefers_provided_value(monkeypatch):
+    # Provided value should be used as-is
+    assert cli._get_password("provided") == "provided"
 
-    state = LoxoneState(control_uuid="abc", state="value", value=0)
+    # When missing, getpass.getpass should be invoked
+    monkeypatch.setattr(cli.getpass, "getpass", lambda prompt: "from-prompt")
+    assert cli._get_password(None) == "from-prompt"
 
-    formatted = _format_state(state, client)
 
-    # Timestamp prefix followed by label and value
-    assert re.match(r"^\[\d{4}-\d{2}-\d{2} ", formatted)
-    assert "Window Sensor: 0" in formatted
+def test_configure_logging_sets_level():
+    # Reset logging configuration so basicConfig applies
+    root_logger = logging.getLogger()
+    root_logger.handlers.clear()
+    root_logger.setLevel(logging.NOTSET)
+
+    cli._configure_logging(verbose=False)
+    assert logging.getLogger().getEffectiveLevel() == logging.INFO
+
+    # Ensure we can elevate to DEBUG
+    cli._configure_logging(verbose=True)
+    assert logging.getLogger().getEffectiveLevel() == logging.DEBUG
+
+
+def test_run_authenticates_and_prints_quiet(capsys, monkeypatch):
+    class FakeClient:
+        def __init__(self, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def authenticate(self, **kwargs):
+            return "jwt-token-value"
+
+    # Replace the real client with the fake
+    monkeypatch.setattr(cli, "LoxoneClient", FakeClient)
+
+    args = Namespace(
+        host="example.com",
+        port=443,
+        user="user",
+        password="pass",
+        no_verify_ssl=False,
+        permission=2,
+        uuid="",
+        info="loxone_api",
+        quiet=True,
+        verbose=False,
+    )
+
+    rc = asyncio.run(cli._run(args))
+
+    captured = capsys.readouterr().out.strip()
+    assert rc == 0
+    assert captured == "jwt-token-value"
