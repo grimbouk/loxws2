@@ -9,3 +9,6 @@ description = "Async client for the Loxone Miniserver"
 authors = [{name = "Your Name"}]
 dependencies = ["aiohttp"]
 readme = "README.md"
+
+[tool.setuptools]
+packages = ["loxone_api"]
