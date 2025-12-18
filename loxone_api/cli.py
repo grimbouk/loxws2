@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import getpass
 import logging
+import sys
 import signal
 import time
 from typing import Iterable
@@ -23,8 +24,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("host", help="Hostname or IP of the Miniserver")
     parser.add_argument("username", help="Username for authentication")
     parser.add_argument("password", nargs="?", help="Password for authentication (will prompt if omitted)")
-    parser.add_argument("--port", type=int, help="Port of the Miniserver (defaults to 443 or 80)")
-    parser.add_argument("--no-tls", action="store_true", help="Disable TLS and use http/websocket")
+    parser.add_argument("--port", type=int, help="Port of the Miniserver (defaults to 443)")
     parser.add_argument("--no-verify-ssl", action="store_true", help="Skip TLS certificate verification")
     parser.add_argument(
         "--list-controls",
@@ -57,12 +57,13 @@ def _format_state(state: LoxoneState, client: LoxoneClient) -> str:
 
 async def _run(args: argparse.Namespace) -> None:
     password = args.password or getpass.getpass("Password: ")
+    print(password)
     client = LoxoneClient(
         args.host,
         args.username,
         password,
         port=args.port,
-        use_tls=not args.no_tls,
+        use_tls=True,
         verify_ssl=not args.no_verify_ssl,
     )
 
@@ -92,7 +93,15 @@ def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
 
-    logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO)
+    # Configure logging to print to stdout and respect --verbose
+    level = logging.DEBUG if args.verbose else logging.INFO
+    root = logging.getLogger()
+    # Ensure there's a stream handler to stdout with a readable formatter
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    # Replace existing handlers so output is predictable in CLI
+    root.handlers[:] = [handler]
+    root.setLevel(level)
 
     try:
         asyncio.run(_run(args))

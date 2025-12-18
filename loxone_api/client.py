@@ -24,6 +24,7 @@ from .const import (
     TOKEN_REFRESH_THRESHOLD,
 )
 from .models import CallbackType, LoxoneControl, LoxoneState
+from .auth import build_getjwt_path, JwtRequestParams
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -57,8 +58,11 @@ class LoxoneClient:
         self.host = host
         self.username = username
         self.password = password
-        self.port = port if port is not None else (DEFAULT_TLS_PORT if use_tls else DEFAULT_PORT)
-        self.use_tls = use_tls
+        # Enforce TLS/WSS-only operation for security
+        if not use_tls:
+            raise ValueError("Only TLS/WSS (HTTPS/WSS) is supported")
+        self.port = port if port is not None else DEFAULT_TLS_PORT
+        self.use_tls = True
         self.verify_ssl = verify_ssl
         self._external_session = session
         self._session: aiohttp.ClientSession | None = None
@@ -113,12 +117,17 @@ class LoxoneClient:
         is documented in the vendor guides bundled with this repository.
         """
 
-        print("Authenticating...")
+        _LOGGER.debug("Authenticating using encrypted getjwt flow")
 
         assert self._session
+        # Use getkey2 and HMAC-based getjwt path for encrypted-command compatible Miniserver
         key = await self._fetch_key()
-        password_hash = hashlib.sha1((self.password + key).encode("utf-8")).hexdigest()
-        url = urljoin(self.base_url, f"/jdev/sys/getjwt/{self.username}/{password_hash}")
+        print("key for auth:", key)
+        
+        path, dbg = build_getjwt_path(self.username, self.password, key, JwtRequestParams())
+        _LOGGER.debug("JWT build debug: %s", {k: dbg[k] for k in ("user", "permission", "uuid", "info_enc", "pw_hash", "key_bytes_len", "key_bytes_hex", "hmac_hex", "path")})
+        url = urljoin(self.base_url, path)
+        _LOGGER.debug("Auth URL: %s", url)
         async with self._session.get(url, ssl=self.verify_ssl) as resp:
             body = await resp.text()
 
@@ -130,14 +139,15 @@ class LoxoneClient:
 
         try:
             payload = json.loads(body)
-            print(payload)
         except json.JSONDecodeError as err:
             _LOGGER.error("Authentication response was not valid JSON: %s", body)
             raise LoxoneApiError("Invalid authentication response") from err
 
+        # getjwt typically returns LL.value with token and optional controlInfo.validUntil
         token_value = payload.get("LL", {}).get("value") or payload.get("token")
-        valid_until = payload.get("LL", {}).get("controlInfo", {}).get("validUntil") or payload.get(
-            "validUntil", 0
+        valid_until = (
+            payload.get("LL", {}).get("controlInfo", {}).get("validUntil")
+            or payload.get("validUntil", 0)
         )
         if not token_value:
             _LOGGER.error("Authentication response missing token; payload: %s", payload)
@@ -151,8 +161,11 @@ class LoxoneClient:
     async def _fetch_key(self) -> str:
         """Fetch the temporary key required to hash credentials."""
 
+        print("Fetching key from miniserver...")
+
         assert self._session
-        url = urljoin(self.base_url, "/jdev/sys/getkey")
+        # Prefer the newer getkey2 endpoint which returns keys suitable for encrypted-command flows
+        url = urljoin(self.base_url, f"/jdev/sys/getkey2/{self.username}")
         async with self._session.get(url, ssl=self.verify_ssl) as resp:
             body = await resp.text()
 
@@ -160,17 +173,28 @@ class LoxoneClient:
             _LOGGER.error("Key retrieval failed with status %s: %s", resp.status, body)
             raise LoxoneApiError(f"Failed to fetch key: {resp.status}")
 
+        print("Key fetched successfully")
+
         try:
             payload = json.loads(body)
+            print("Payload:", payload)
         except json.JSONDecodeError as err:
             _LOGGER.error("Key response was not valid JSON: %s", body)
             raise LoxoneApiError("Invalid key response") from err
 
-        key = payload.get("LL", {}).get("value")
+        val = payload.get("LL", {}).get("value")
+        # Newer Miniservers return an object with the actual key under 'key'
+        if isinstance(val, dict):
+            key = val.get("key") or val.get("value")
+            _LOGGER.debug("Parsed getkey2 value object, extracted key present: %s", bool(key))
+        else:
+            key = val
+
         if not key:
             _LOGGER.error("Key response missing value; payload: %s", payload)
             raise LoxoneApiError("No key returned from Miniserver")
 
+        _LOGGER.debug("Key retrieved (length=%s)", len(str(key)))
         return str(key)
 
     async def _load_structure(self) -> None:
