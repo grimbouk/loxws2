@@ -29,8 +29,13 @@ jobs:
         with:
           python-version: '3.x'
 
-      - name: Install build tooling
-        run: pip install build twine tomli
+      - name: Install dependencies
+        run: |
+          pip install -e .
+          pip install build twine tomli pytest
+
+      - name: Run tests
+        run: pytest
 
       - name: Bump version
         id: bump

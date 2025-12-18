@@ -12,3 +12,6 @@ readme = "README.md"
 
 [tool.setuptools]
 packages = ["loxone_api"]
+
+[project.scripts]
+loxone-api-cli = "loxone_api.cli:main"
