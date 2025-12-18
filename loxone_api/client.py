@@ -112,6 +112,8 @@ class LoxoneClient:
         is documented in the vendor guides bundled with this repository.
         """
 
+        print("Authenticating...")
+
         assert self._session
         auth = aiohttp.BasicAuth(self.username, self.password)
         url = urljoin(self.base_url, "/jdev/sys/getjwt")
@@ -122,8 +124,11 @@ class LoxoneClient:
             _LOGGER.error("Authentication failed with status %s: %s", resp.status, body)
             raise LoxoneApiError(f"Failed to authenticate: {resp.status}")
 
+        print("Authentication successful")
+
         try:
             payload = json.loads(body)
+            print(payload)
         except json.JSONDecodeError as err:
             _LOGGER.error("Authentication response was not valid JSON: %s", body)
             raise LoxoneApiError("Invalid authentication response") from err

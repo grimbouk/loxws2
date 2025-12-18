@@ -24,7 +24,7 @@ The integration currently creates entities for lights, sensors, binary sensors, 
 After installing the package locally you can use the shim to connect directly to a Miniserver and view live events without Home Assistant:
 
 ```bash
-loxone-api-cli <host> <username> [password] --list-controls
+python3 -m loxone_api.cli <host> <username> [password] --list-controls
 ```
 
 - If the password is omitted you will be prompted securely.
