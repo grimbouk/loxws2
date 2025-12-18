@@ -1,11 +1,11 @@
 {
   "domain": "loxone",
   "name": "Loxone Miniserver",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "documentation": "https://developers.home-assistant.io/",
   "issue_tracker": "https://example.com/issues",
   "requirements": [
-    "loxone-api==0.1.1"
+    "loxone-api==0.1.2"
   ],
   "dependencies": [],
   "codeowners": [

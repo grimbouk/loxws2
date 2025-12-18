@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "loxone-api"
-version = "0.1.1"
+version = "0.1.2"
 description = "Async client for the Loxone Miniserver"
 authors = [{name = "Your Name"}]
 dependencies = ["aiohttp"]
