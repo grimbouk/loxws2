@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import time
@@ -115,9 +116,10 @@ class LoxoneClient:
         print("Authenticating...")
 
         assert self._session
-        auth = aiohttp.BasicAuth(self.username, self.password)
-        url = urljoin(self.base_url, "/jdev/sys/getjwt")
-        async with self._session.get(url, auth=auth, ssl=self.verify_ssl) as resp:
+        key = await self._fetch_key()
+        password_hash = hashlib.sha1((self.password + key).encode("utf-8")).hexdigest()
+        url = urljoin(self.base_url, f"/jdev/sys/getjwt/{self.username}/{password_hash}")
+        async with self._session.get(url, ssl=self.verify_ssl) as resp:
             body = await resp.text()
 
         if resp.status != 200:
@@ -145,6 +147,31 @@ class LoxoneClient:
             valid_until = time.time() + 1800
         self._token = TokenInfo(token=token_value, valid_until=float(valid_until))
         _LOGGER.debug("Authenticated with token expiring at %s", self._token.valid_until)
+
+    async def _fetch_key(self) -> str:
+        """Fetch the temporary key required to hash credentials."""
+
+        assert self._session
+        url = urljoin(self.base_url, "/jdev/sys/getkey")
+        async with self._session.get(url, ssl=self.verify_ssl) as resp:
+            body = await resp.text()
+
+        if resp.status != 200:
+            _LOGGER.error("Key retrieval failed with status %s: %s", resp.status, body)
+            raise LoxoneApiError(f"Failed to fetch key: {resp.status}")
+
+        try:
+            payload = json.loads(body)
+        except json.JSONDecodeError as err:
+            _LOGGER.error("Key response was not valid JSON: %s", body)
+            raise LoxoneApiError("Invalid key response") from err
+
+        key = payload.get("LL", {}).get("value")
+        if not key:
+            _LOGGER.error("Key response missing value; payload: %s", payload)
+            raise LoxoneApiError("No key returned from Miniserver")
+
+        return str(key)
 
     async def _load_structure(self) -> None:
         """Load the structure file describing controls."""

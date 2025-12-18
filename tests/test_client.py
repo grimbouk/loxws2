@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import sys
 import time
@@ -26,7 +27,9 @@ class FakeResponse:
         return False
 
     async def text(self):
-        return self._body
+        if self._body:
+            return self._body
+        return json.dumps(self._json_data)
 
     async def json(self, content_type=None):
         return self._json_data
@@ -52,9 +55,16 @@ def test_base_url_scheme_switch():
 
 
 def test_authenticate_sets_token():
-    auth_url = "https://example.com:443/jdev/sys/getjwt"
+    key_url = "https://example.com:443/jdev/sys/getkey"
+    auth_hash = hashlib.sha1("passabcd".encode("utf-8")).hexdigest()
+    auth_url = f"https://example.com:443/jdev/sys/getjwt/user/{auth_hash}"
     response_body = json.dumps({"LL": {"value": "jwt-token", "controlInfo": {"validUntil": time.time() + 1000}}})
-    session = FakeSession({auth_url: FakeResponse(status=200, body=response_body)})
+    session = FakeSession(
+        {
+            key_url: FakeResponse(json_data={"LL": {"value": "abcd"}}),
+            auth_url: FakeResponse(status=200, body=response_body),
+        }
+    )
     client = LoxoneClient("example.com", "user", "pass", session=session)
     client._session = session
 
@@ -66,8 +76,15 @@ def test_authenticate_sets_token():
 
 
 def test_authenticate_handles_error_status():
-    auth_url = "https://example.com:443/jdev/sys/getjwt"
-    session = FakeSession({auth_url: FakeResponse(status=401, body="unauthorized")})
+    key_url = "https://example.com:443/jdev/sys/getkey"
+    auth_hash = hashlib.sha1("passabcd".encode("utf-8")).hexdigest()
+    auth_url = f"https://example.com:443/jdev/sys/getjwt/user/{auth_hash}"
+    session = FakeSession(
+        {
+            key_url: FakeResponse(json_data={"LL": {"value": "abcd"}}),
+            auth_url: FakeResponse(status=401, body="unauthorized"),
+        }
+    )
     client = LoxoneClient("example.com", "user", "pass", session=session)
     client._session = session
 
