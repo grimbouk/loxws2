@@ -1,6 +1,4 @@
 # Ignore the entire private folder (sensitive, never commit)
 private/
 .DS_Store
-
-# If you previously committed files from `private/`, you'll need to remove them from
-# git history (see instructions in the repo README or run recommended commands locally).
+loxone_api/__pycache__
