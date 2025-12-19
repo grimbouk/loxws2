@@ -90,10 +90,8 @@ class LoxoneClient:
 
         timeout = aiohttp.ClientTimeout(total=self.timeout_s)
 
-        if self.verify_tls:
-            ssl_context = ssl.create_default_context()
-        else:
-            ssl_context = ssl.create_default_context()
+        ssl_context = await asyncio.to_thread(ssl.create_default_context)
+        if not self.verify_tls:
             ssl_context.check_hostname = False
             ssl_context.verify_mode = ssl.CERT_NONE
 
