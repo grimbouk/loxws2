@@ -3,15 +3,16 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict
+from typing import Any, Callable, Dict
 
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_send
+from homeassistant.helpers.event import async_track_time_interval
 
 from loxone_api import LoxoneClient, LoxoneControl, LoxoneState
 from loxone_api.const import DEFAULT_STRUCT_PATH
 
-from .const import DOMAIN
+from .const import DEFAULT_SCAN_INTERVAL, DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -24,16 +25,24 @@ class LoxoneCoordinator:
         self.client = client
         self.controls: Dict[str, Any] = {}
         self.states: Dict[str, Any] = {}
+        self._unsub_poll: Callable[[], None] | None = None
 
     async def async_setup(self) -> None:
         """Initialise client and register callbacks."""
 
         await self.client.authenticate()
         self.controls = await self._load_controls()
+        await self._async_poll_controls()
+        self._unsub_poll = async_track_time_interval(
+            self.hass, self._async_poll_controls, DEFAULT_SCAN_INTERVAL
+        )
 
     async def async_unload(self) -> None:
         """Close the client connection."""
 
+        if self._unsub_poll:
+            self._unsub_poll()
+            self._unsub_poll = None
         await self.client.close()
 
     async def async_send_command(
@@ -62,6 +71,19 @@ class LoxoneCoordinator:
         value = payload.get("LL", {}).get("value", payload)
         self.states[control_uuid] = value
         return value
+
+    async def _async_poll_controls(self, now: Any | None = None) -> None:
+        """Poll all controls and dispatch updates."""
+
+        for control_uuid in self.controls:
+            previous = self.states.get(control_uuid)
+            value = await self.async_update_state(control_uuid)
+            if value != previous:
+                async_dispatcher_send(
+                    self.hass,
+                    f"{DOMAIN}_state_update",
+                    LoxoneState(control_uuid=control_uuid, state="value", value=value),
+                )
 
     @callback
     def _handle_state(self, state: LoxoneState) -> None:
