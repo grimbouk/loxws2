@@ -114,10 +114,25 @@ class LoxoneClient:
             text = await resp.text()
             return resp.status, text
 
+    @staticmethod
+    def _parse_json_text(text: str) -> Dict[str, Any]:
+        try:
+            return json.loads(text)
+        except Exception:
+            sanitized = text.lstrip("\ufeff").strip("\x00")
+            try:
+                return json.loads(sanitized)
+            except Exception:
+                start = sanitized.find("{")
+                end = sanitized.rfind("}")
+                if start != -1 and end != -1 and end > start:
+                    return json.loads(sanitized[start : end + 1])
+                raise
+
     async def _get_json(self, path: str) -> Tuple[int, Dict[str, Any]]:
         status, text = await self._get_text(path)
         try:
-            data = aiohttp.helpers.json.loads(text)
+            data = self._parse_json_text(text)
         except Exception:
             # Not JSON (often HTML errors)
             raise LoxoneRequestError(f"Non-JSON response (status {status}): {text}")
