@@ -65,7 +65,7 @@ def decode_getkey2_key_to_hmac_key_bytes(key_hex: str) -> Tuple[bytes, str]:
 
 @dataclass(frozen=True)
 class JwtRequestParams:
-    permission: int = 2  # 2=Web, 4=App (depending on your use-case)
+    permission: int = 4  # 2=Web, 4=App (depending on your use-case)
     uuid: str = ""
     info: str = "loxone_api"
 
