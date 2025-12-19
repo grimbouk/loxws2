@@ -47,9 +47,11 @@ class LoxoneLight(LoxoneEntity, LightEntity):
         brightness = kwargs.get(ATTR_BRIGHTNESS)
         if brightness is not None:
             value = round(brightness / 2.55, 1)
-            await self.coordinator.client.send_control_command(self.control.uuid, "setValue", value)
+            await self.coordinator.async_send_command(
+                self.control.uuid, "setValue", value
+            )
         else:
-            await self.coordinator.client.send_control_command(self.control.uuid, "on")
+            await self.coordinator.async_send_command(self.control.uuid, "on")
 
     async def async_turn_off(self, **kwargs) -> None:
-        await self.coordinator.client.send_control_command(self.control.uuid, "off")
+        await self.coordinator.async_send_command(self.control.uuid, "off")

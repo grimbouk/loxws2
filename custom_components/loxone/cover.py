@@ -39,10 +39,10 @@ class LoxoneCover(LoxoneEntity, CoverEntity):
         return float(value) <= 0
 
     async def async_open_cover(self, **kwargs) -> None:
-        await self.coordinator.client.send_control_command(self.control.uuid, "open")
+        await self.coordinator.async_send_command(self.control.uuid, "open")
 
     async def async_close_cover(self, **kwargs) -> None:
-        await self.coordinator.client.send_control_command(self.control.uuid, "close")
+        await self.coordinator.async_send_command(self.control.uuid, "close")
 
     async def async_stop_cover(self, **kwargs) -> None:
-        await self.coordinator.client.send_control_command(self.control.uuid, "stop")
+        await self.coordinator.async_send_command(self.control.uuid, "stop")
