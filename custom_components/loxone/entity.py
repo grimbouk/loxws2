@@ -17,7 +17,7 @@ from .coordinator import LoxoneCoordinator
 class LoxoneEntity(Entity):
     """Representation of a Loxone control as a Home Assistant entity."""
 
-    _attr_should_poll = False
+    _attr_should_poll = True
 
     def __init__(self, coordinator: LoxoneCoordinator, control: LoxoneControl) -> None:
         self.coordinator = coordinator
@@ -40,6 +40,11 @@ class LoxoneEntity(Entity):
         if self._unsub:
             self._unsub()
             self._unsub = None
+
+    async def async_update(self) -> None:
+        """Poll the latest state when websocket updates are unavailable."""
+
+        await self.coordinator.async_update_state(self.control.uuid)
 
     @property
     def available(self) -> bool:

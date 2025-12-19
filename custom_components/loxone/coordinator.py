@@ -48,6 +48,21 @@ class LoxoneCoordinator:
 
         await self.client.jdev_get(path)
 
+    async def async_update_state(self, control_uuid: str) -> Any:
+        """Fetch and cache the current state for a control."""
+
+        try:
+            payload = await self.client.jdev_get(f"sps/io/{control_uuid}")
+        except Exception as err:
+            _LOGGER.warning(
+                "Unable to refresh state for control %s: %s", control_uuid, err
+            )
+            return self.states.get(control_uuid)
+
+        value = payload.get("LL", {}).get("value", payload)
+        self.states[control_uuid] = value
+        return value
+
     @callback
     def _handle_state(self, state: LoxoneState) -> None:
         """Handle updates coming from the websocket."""
