@@ -238,11 +238,19 @@ class LoxoneClient:
             raise LoxoneAuthError(f"Authentication response was not JSON: {text}")
 
         ll_value = self._extract_ll_value(payload)
-        if not ll_value or not isinstance(ll_value, str):
+
+        # Some Miniserver firmwares return an object under LL.value with token and metadata:
+        #   LL.value == { 'token': '...', 'validUntil': ..., 'tokenRights': ..., ... }
+        if isinstance(ll_value, dict):
+            token = ll_value.get("token") or ll_value.get("value")
+        else:
+            token = ll_value
+
+        if not token or not isinstance(token, str):
             raise LoxoneAuthError(f"getjwt returned no token: {payload}")
 
-        self._jwt = ll_value
-        return ll_value
+        self._jwt = token
+        return token
 
     @property
     def jwt(self) -> Optional[str]:
