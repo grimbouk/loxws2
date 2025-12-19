@@ -1,5 +1,7 @@
 """Constants for the Loxone Home Assistant integration."""
 
+from datetime import timedelta
+
 DOMAIN = "loxone"
 DEFAULT_TITLE = "Loxone Miniserver"
 CONF_HOST = "host"
@@ -17,3 +19,5 @@ PLATFORMS = [
     "climate",
     "scene",
 ]
+
+DEFAULT_SCAN_INTERVAL = timedelta(seconds=30)
