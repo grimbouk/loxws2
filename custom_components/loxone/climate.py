@@ -44,7 +44,11 @@ class LoxoneClimate(LoxoneEntity, ClimateEntity):
         temp = kwargs.get(ATTR_TEMPERATURE)
         if temp is None:
             return
-        await self.coordinator.client.send_control_command(self.control.uuid, "setTemperature", temp)
+        await self.coordinator.async_send_command(
+            self.control.uuid, "setTemperature", temp
+        )
 
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
-        await self.coordinator.client.send_control_command(self.control.uuid, "setMode", hvac_mode)
+        await self.coordinator.async_send_command(
+            self.control.uuid, "setMode", hvac_mode.value
+        )

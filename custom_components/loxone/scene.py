@@ -28,4 +28,4 @@ class LoxoneScene(LoxoneEntity, Scene):
     """Representation of a Loxone scene."""
 
     async def async_activate(self, **kwargs) -> None:
-        await self.coordinator.client.send_control_command(self.control.uuid, "activate")
+        await self.coordinator.async_send_command(self.control.uuid, "activate")

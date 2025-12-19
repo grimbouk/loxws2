@@ -10,7 +10,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers.typing import ConfigType
 
-from loxone_api import LoxoneClient
+from loxone_api import DEFAULT_PORT, DEFAULT_TLS_PORT, LoxoneClient
 
 from .const import CONF_USE_TLS, CONF_VERIFY_SSL, DOMAIN, PLATFORMS
 from .coordinator import LoxoneCoordinator
@@ -37,13 +37,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         entry.data.get(CONF_VERIFY_SSL, True),
     )
 
+    use_tls = entry.data.get(CONF_USE_TLS, True)
+    if not use_tls:
+        _LOGGER.warning(
+            "LoxoneClient currently supports HTTPS only; proceeding with HTTPS settings."
+        )
+
+    port = entry.data.get(CONF_PORT) or (DEFAULT_TLS_PORT if use_tls else DEFAULT_PORT)
+
     client = LoxoneClient(
         host=entry.data[CONF_HOST],
-        username=entry.data[CONF_USERNAME],
+        user=entry.data[CONF_USERNAME],
         password=entry.data[CONF_PASSWORD],
-        port=entry.data.get(CONF_PORT),
-        use_tls=entry.data.get(CONF_USE_TLS, True),
-        verify_ssl=entry.data.get(CONF_VERIFY_SSL, True),
+        port=port,
+        verify_tls=entry.data.get(CONF_VERIFY_SSL, True),
     )
 
     coordinator = LoxoneCoordinator(hass, client)
