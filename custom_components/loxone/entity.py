@@ -54,5 +54,10 @@ class LoxoneEntity(Entity):
     def extra_state_attributes(self) -> dict[str, Any]:
         return {"room": self.control.room, "category": self.control.category}
 
+    @property
+    def suggested_area(self) -> str | None:
+        """Suggest Home Assistant area based on Loxone room."""
+        return self.control.room
+
     def _current_state(self) -> Any:
         return self.coordinator.get_state(self.control.uuid)

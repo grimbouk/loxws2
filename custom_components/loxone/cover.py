@@ -34,9 +34,12 @@ class LoxoneCover(LoxoneEntity, CoverEntity):
     @property
     def is_closed(self) -> bool | None:
         value = self._current_state()
-        if value is None:
+        if value is None or value == "":
             return None
-        return float(value) <= 0
+        try:
+            return float(value) <= 0
+        except (ValueError, TypeError):
+            return None
 
     async def async_open_cover(self, **kwargs) -> None:
         await self.coordinator.async_send_command(self.control.uuid, "open")

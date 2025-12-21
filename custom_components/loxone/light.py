@@ -38,10 +38,14 @@ class LoxoneLight(LoxoneEntity, LightEntity):
     @property
     def brightness(self) -> int | None:
         value = self._current_state()
-        if value is None:
+        if value is None or value == "":
             return None
-        # Loxone expresses dimmer values as 0-100
-        return int(float(value) * 2.55) if value <= 100 else int(value)
+        try:
+            # Loxone expresses dimmer values as 0-100
+            float_val = float(value)
+            return int(float_val * 2.55) if float_val <= 100 else int(float_val)
+        except (ValueError, TypeError):
+            return None
 
     async def async_turn_on(self, **kwargs) -> None:
         brightness = kwargs.get(ATTR_BRIGHTNESS)
