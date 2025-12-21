@@ -24,7 +24,11 @@ class LoxoneEntity(Entity):
         self.control = control
         self._unsub: Callable[[], None] | None = None
         self._attr_unique_id = control.uuid
-        self._attr_name = control.name
+        # Include room in entity name for clarity if available
+        if control.room:
+            self._attr_name = f"{control.room} - {control.name}"
+        else:
+            self._attr_name = control.name
 
     async def async_added_to_hass(self) -> None:
         @callback

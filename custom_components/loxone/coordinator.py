@@ -93,6 +93,10 @@ class LoxoneCoordinator:
             room_uuid: room_data.get("name")
             for room_uuid, room_data in (structure.get("rooms") or {}).items()
         }
+        
+        # Pre-create Home Assistant areas for each Loxone room
+        await self._create_areas(rooms.values())
+        
         categories = {
             cat_uuid: cat_data.get("name")
             for cat_uuid, cat_data in (structure.get("cats") or {}).items()
@@ -113,3 +117,18 @@ class LoxoneCoordinator:
             )
 
         return controls
+
+    async def _create_areas(self, room_names: list) -> None:
+        """Pre-create Home Assistant areas for Loxone rooms."""
+        area_registry = self.hass.data.get("area_registry")
+        if not area_registry:
+            return
+
+        for room_name in room_names:
+            if not room_name:
+                continue
+            # Check if area already exists
+            if area_registry.async_get_area_by_name(room_name):
+                continue
+            # Create new area
+            area_registry.async_create(room_name)
