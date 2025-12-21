@@ -46,10 +46,14 @@ class LoxoneCoordinator:
     ) -> None:
         """Send a control command using the jdev endpoint."""
 
+        ctrl: LoxoneControl | None = self.controls.get(control_uuid)
+        # Many Loxone controls (and subcontrols) require using uuidAction for jdev commands
+        action_uuid = (ctrl.states.get("uuidAction") if ctrl else None) or control_uuid
+
         if value is None:
-            path = f"sps/io/{control_uuid}/{command}"
+            path = f"sps/io/{action_uuid}/{command}"
         else:
-            path = f"sps/io/{control_uuid}/{command}/{value}"
+            path = f"sps/io/{action_uuid}/{command}/{value}"
 
         _LOGGER.debug("Sending command to %s: %s/%s (value=%s)", control_uuid, command, value, value)
         
@@ -57,8 +61,9 @@ class LoxoneCoordinator:
             payload = await self.client.jdev_get(path)
             _LOGGER.debug("Command response: %s", payload)
             
-            # Check if the command was successful
-            ll_code = payload.get("LL", {}).get("code")
+            # Check if the command was successful (handle both 'code' and 'Code')
+            ll = payload.get("LL", {})
+            ll_code = ll.get("code") or ll.get("Code")
             if ll_code not in ("200", 200):
                 _LOGGER.warning(
                     "Command %s/%s failed with code %s: %s",
@@ -67,12 +72,22 @@ class LoxoneCoordinator:
         except Exception as err:
             _LOGGER.error("Failed to send command %s/%s: %s", command, value, err)
             raise
+        
+        # Fetch updated state immediately after command
+        try:
+            await self.async_update_state(control_uuid)
+        except Exception as err:
+            _LOGGER.warning("Failed to fetch updated state for %s: %s", control_uuid, err)
 
     async def async_update_state(self, control_uuid: str) -> Any:
         """Fetch and cache the current state for a control."""
 
+        ctrl: LoxoneControl | None = self.controls.get(control_uuid)
+        # Use uuidAction when available for consistent state reads
+        read_uuid = (ctrl.states.get("uuidAction") if ctrl else None) or control_uuid
+
         try:
-            payload = await self.client.jdev_get(f"sps/io/{control_uuid}")
+            payload = await self.client.jdev_get(f"sps/io/{read_uuid}")
         except Exception as err:
             _LOGGER.warning(
                 "Unable to refresh state for control %s: %s", control_uuid, err
@@ -81,6 +96,14 @@ class LoxoneCoordinator:
 
         value = payload.get("LL", {}).get("value", payload)
         self.states[control_uuid] = value
+        
+        # Notify Home Assistant that state has changed
+        async_dispatcher_send(
+            self.hass,
+            f"{DOMAIN}_state_update",
+            LoxoneState(control_uuid=control_uuid, state="", value=value)
+        )
+        
         return value
 
     @callback
@@ -110,7 +133,7 @@ class LoxoneCoordinator:
         }
         
         # Pre-create Home Assistant areas for each Loxone room
-        await self._create_areas(rooms.values())
+        await self._create_areas(list(rooms.values()))
         
         categories = {
             cat_uuid: cat_data.get("name")
@@ -121,7 +144,9 @@ class LoxoneCoordinator:
         for control_uuid, control in (structure.get("controls") or {}).items():
             if not isinstance(control, dict):
                 continue
-            controls[control_uuid] = LoxoneControl(
+
+            # Parent/top-level control
+            parent = LoxoneControl(
                 uuid=control_uuid,
                 name=control.get("name") or control_uuid,
                 type=control.get("type") or "",
@@ -130,6 +155,42 @@ class LoxoneCoordinator:
                 states=control.get("states") or {},
                 details=control.get("details") or {},
             )
+            controls[control_uuid] = parent
+
+            # Subcontrols (e.g., LightControllerV2 outputs, moods, etc.)
+            sub_controls = control.get("subControls") or {}
+            # Handle dict keyed by UUID or list of subcontrol dicts
+            if isinstance(sub_controls, dict):
+                iterable = sub_controls.items()
+            elif isinstance(sub_controls, list):
+                # Convert list to (uuid, data) pairs when possible
+                iterable = (
+                    (
+                        sc.get("uuid") or sc.get("id") or sc.get("UUID") or "",
+                        sc,
+                    )
+                    for sc in sub_controls
+                    if isinstance(sc, dict)
+                )
+            else:
+                iterable = []
+
+            for sc_uuid, sc_data in iterable:
+                if not sc_uuid or not isinstance(sc_data, dict):
+                    continue
+                name = sc_data.get("name") or sc_uuid
+                # Prefix with parent name for clarity
+                full_name = f"{parent.name} - {name}" if parent.name else name
+                sc = LoxoneControl(
+                    uuid=sc_uuid,
+                    name=full_name,
+                    type=(sc_data.get("type") or sc_data.get("typeName") or ""),
+                    room=parent.room,
+                    category=parent.category,
+                    states=sc_data.get("states") or {},
+                    details={**(sc_data.get("details") or {}), "parent_uuid": control_uuid},
+                )
+                controls[sc_uuid] = sc
 
         return controls
 

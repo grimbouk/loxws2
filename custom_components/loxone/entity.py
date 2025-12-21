@@ -17,7 +17,7 @@ from .coordinator import LoxoneCoordinator
 class LoxoneEntity(Entity):
     """Representation of a Loxone control as a Home Assistant entity."""
 
-    _attr_should_poll = True
+    _attr_should_poll = False  # Don't poll - we use dispatcher for updates
 
     def __init__(self, coordinator: LoxoneCoordinator, control: LoxoneControl) -> None:
         self.coordinator = coordinator
