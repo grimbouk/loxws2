@@ -112,7 +112,11 @@ class LoxoneClient:
         url = self._full_url(path)
         log.debug("GET %s", url)
 
-        async with self._session.get(url) as resp:
+        headers = {}
+        if self._jwt:
+            headers["Authorization"] = f"Bearer {self._jwt}"
+
+        async with self._session.get(url, headers=headers if headers else None) as resp:
             text = await resp.text()
             return resp.status, text
 
