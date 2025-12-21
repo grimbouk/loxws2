@@ -27,13 +27,19 @@ class LoxoneCoordinator:
     async def async_setup(self) -> None:
         """Initialise client and register callbacks."""
 
-        await self.client.authenticate()
+        await self.client.__aenter__()
+        _LOGGER.debug("Client session initialized")
+        
+        token = await self.client.authenticate()
+        _LOGGER.debug("Authentication successful, JWT: %s...", token[:24] if len(token) > 24 else token)
+        _LOGGER.debug("Client JWT property: %s", self.client.jwt[:24] if self.client.jwt and len(self.client.jwt) > 24 else self.client.jwt)
+        
         self.controls = await self._load_controls()
 
     async def async_unload(self) -> None:
         """Close the client connection."""
 
-        await self.client.close()
+        await self.client.__aexit__(None, None, None)
 
     async def async_send_command(
         self, control_uuid: str, command: str, value: Any | None = None

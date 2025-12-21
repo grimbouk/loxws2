@@ -297,6 +297,8 @@ class LoxoneClient:
         if not self._jwt:
             raise LoxoneAuthError("Not authenticated. Call authenticate() first.")
 
+        log.debug("Loading structure with JWT: %s...", self._jwt[:24])
+
         try:
             status, payload = await self._get_json("/data/LoxAPP3.json")
             if status != 200:
