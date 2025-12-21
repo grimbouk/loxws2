@@ -242,7 +242,16 @@ class LoxoneClient:
         # Some Miniserver firmwares return an object under LL.value with token and metadata:
         #   LL.value == { 'token': '...', 'validUntil': ..., 'tokenRights': ..., ... }
         if isinstance(ll_value, dict):
-            token = ll_value.get("token") or ll_value.get("value")
+            token = ll_value.get("token") or ll_value.get("Token")
+            if token is None:
+                token = ll_value.get("value") or ll_value.get("Value")
+            if isinstance(token, dict):
+                token = (
+                    token.get("token")
+                    or token.get("Token")
+                    or token.get("value")
+                    or token.get("Value")
+                )
         else:
             token = ll_value
 
