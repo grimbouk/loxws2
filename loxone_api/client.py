@@ -85,11 +85,18 @@ class LoxoneClient:
         self._session = None
 
     async def _ensure_session(self) -> None:
-        if self._session:
+        if self._session and not self._session.closed:
             return
 
+        # Close any existing dead session
+        if self._session:
+            try:
+                await self._session.close()
+            except Exception:
+                pass
+            self._session = None
+
         # Use separate timeouts: sock_read for waiting on data, total for entire request
-        # This prevents short timeouts from interrupting long polling operations
         timeout = aiohttp.ClientTimeout(
             sock_read=self.timeout_s,
             total=None  # No total timeout - let server control connection lifetime
@@ -121,18 +128,9 @@ class LoxoneClient:
         if self._jwt:
             headers["Authorization"] = f"Bearer {self._jwt}"
 
-        try:
-            async with self._session.get(url, headers=headers if headers else None) as resp:
-                text = await resp.text()
-                return resp.status, text
-        except Exception as e:
-            # Session may be closed/dead - try to recreate it once
-            log.warning("Request failed (%s), recreating session and retrying", e)
-            self._session = None
-            await self._ensure_session()
-            async with self._session.get(url, headers=headers if headers else None) as resp:
-                text = await resp.text()
-                return resp.status, text
+        async with self._session.get(url, headers=headers if headers else None) as resp:
+            text = await resp.text()
+            return resp.status, text
 
     @staticmethod
     def _parse_json_text(text: str) -> Dict[str, Any]:
