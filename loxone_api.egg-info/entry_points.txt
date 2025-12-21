@@ -1,0 +1,2 @@
+[console_scripts]
+loxone-api-cli = loxone_api.cli:main

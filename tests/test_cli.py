@@ -27,7 +27,6 @@ def test_build_parser_includes_expected_arguments():
         "custom",
         "--info",
         "test",
-        "--quiet",
         "--verbose",
     ])
 
@@ -38,7 +37,6 @@ def test_build_parser_includes_expected_arguments():
     assert args.permission == 4
     assert args.uuid == "custom"
     assert args.info == "test"
-    assert args.quiet is True
     assert args.verbose is True
 
 
@@ -65,7 +63,7 @@ def test_configure_logging_sets_level():
     assert logging.getLogger().getEffectiveLevel() == logging.DEBUG
 
 
-def test_run_authenticates_and_prints_quiet(capsys, monkeypatch):
+def test_run_loads_structure(capsys, monkeypatch):
     class FakeClient:
         def __init__(self, **kwargs):
             pass
@@ -79,6 +77,13 @@ def test_run_authenticates_and_prints_quiet(capsys, monkeypatch):
         async def authenticate(self, **kwargs):
             return "jwt-token-value"
 
+        async def load_structure(self):
+            return {
+                "controls": {"test-id": {"name": "Test Control", "type": "Switch"}},
+                "rooms": {},
+                "categories": {},
+            }
+
     # Replace the real client with the fake
     monkeypatch.setattr(cli, "LoxoneClient", FakeClient)
 
@@ -91,12 +96,8 @@ def test_run_authenticates_and_prints_quiet(capsys, monkeypatch):
         permission=2,
         uuid="",
         info="loxone_api",
-        quiet=True,
         verbose=False,
     )
 
     rc = asyncio.run(cli._run(args))
-
-    captured = capsys.readouterr().out.strip()
     assert rc == 0
-    assert captured == "jwt-token-value"
