@@ -56,7 +56,7 @@ class LoxoneClient:
         password: str,
         port: int = 443,
         verify_tls: bool = True,
-        timeout_s: float = 15.0,
+        timeout_s: float = 120.0,
         session: Optional[aiohttp.ClientSession] = None,
     ):
         self.host = host
@@ -88,7 +88,12 @@ class LoxoneClient:
         if self._session:
             return
 
-        timeout = aiohttp.ClientTimeout(total=self.timeout_s)
+        # Use separate timeouts: sock_read for waiting on data, total for entire request
+        # This prevents short timeouts from interrupting long polling operations
+        timeout = aiohttp.ClientTimeout(
+            sock_read=self.timeout_s,
+            total=None  # No total timeout - let server control connection lifetime
+        )
 
         ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
         if self.verify_tls:
@@ -116,9 +121,18 @@ class LoxoneClient:
         if self._jwt:
             headers["Authorization"] = f"Bearer {self._jwt}"
 
-        async with self._session.get(url, headers=headers if headers else None) as resp:
-            text = await resp.text()
-            return resp.status, text
+        try:
+            async with self._session.get(url, headers=headers if headers else None) as resp:
+                text = await resp.text()
+                return resp.status, text
+        except Exception as e:
+            # Session may be closed/dead - try to recreate it once
+            log.warning("Request failed (%s), recreating session and retrying", e)
+            self._session = None
+            await self._ensure_session()
+            async with self._session.get(url, headers=headers if headers else None) as resp:
+                text = await resp.text()
+                return resp.status, text
 
     @staticmethod
     def _parse_json_text(text: str) -> Dict[str, Any]:
