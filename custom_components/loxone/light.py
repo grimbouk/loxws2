@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from homeassistant.components.light import ATTR_BRIGHTNESS, ColorMode, LightEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -10,6 +12,8 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from .const import DOMAIN
 from .entity import LoxoneEntity
 from .coordinator import LoxoneCoordinator
+
+_LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup_entry(
@@ -51,11 +55,17 @@ class LoxoneLight(LoxoneEntity, LightEntity):
         brightness = kwargs.get(ATTR_BRIGHTNESS)
         if brightness is not None:
             value = round(brightness / 2.55, 1)
+            _LOGGER.debug(
+                "Turning on %s with brightness %s (HA scale 0-255) -> %.1f (Loxone scale 0-100)",
+                self.control.uuid, brightness, value
+            )
             await self.coordinator.async_send_command(
                 self.control.uuid, "setValue", value
             )
         else:
+            _LOGGER.debug("Turning on %s without brightness", self.control.uuid)
             await self.coordinator.async_send_command(self.control.uuid, "on")
 
     async def async_turn_off(self, **kwargs) -> None:
+        _LOGGER.debug("Turning off %s", self.control.uuid)
         await self.coordinator.async_send_command(self.control.uuid, "off")

@@ -51,7 +51,22 @@ class LoxoneCoordinator:
         else:
             path = f"sps/io/{control_uuid}/{command}/{value}"
 
-        await self.client.jdev_get(path)
+        _LOGGER.debug("Sending command to %s: %s/%s (value=%s)", control_uuid, command, value, value)
+        
+        try:
+            payload = await self.client.jdev_get(path)
+            _LOGGER.debug("Command response: %s", payload)
+            
+            # Check if the command was successful
+            ll_code = payload.get("LL", {}).get("code")
+            if ll_code not in ("200", 200):
+                _LOGGER.warning(
+                    "Command %s/%s failed with code %s: %s",
+                    command, value, ll_code, payload
+                )
+        except Exception as err:
+            _LOGGER.error("Failed to send command %s/%s: %s", command, value, err)
+            raise
 
     async def async_update_state(self, control_uuid: str) -> Any:
         """Fetch and cache the current state for a control."""
