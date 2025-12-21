@@ -205,7 +205,11 @@ class LoxoneClient:
         """
         log.debug("Authenticating using getkey2/getjwt flow")
 
-        key2 = await self.getkey2()
+        try:
+            key2 = await self.getkey2()
+        except Exception:
+            await self.close()
+            raise
 
         # Build path using correct salt + hashAlg + key decoding
         key_payload = {"key": key2.key, "salt": key2.salt, "hashAlg": key2.hashAlg}
@@ -224,9 +228,11 @@ class LoxoneClient:
         status, text = await self._get_text(jwt_path)
 
         if status == 401:
+            await self.close()
             raise LoxoneAuthError(f"Authentication failed with status 401: {text}")
         if status == 400:
             # Common when Miniserver expects encrypted getjwt; keep message actionable.
+            await self.close()
             raise LoxoneAuthError(
                 "Authentication failed with status 400 (Bad Request). "
                 "Your Miniserver likely requires encrypted JWT requests via websocket keyexchange "
@@ -234,6 +240,7 @@ class LoxoneClient:
                 + text
             )
         if status != 200:
+            await self.close()
             raise LoxoneAuthError(f"Authentication failed with status {status}: {text}")
 
         try:
@@ -284,6 +291,29 @@ class LoxoneClient:
         if status != 200:
             raise LoxoneRequestError(f"Request failed HTTP {status}: {payload}")
         return payload
+
+    async def load_structure(self) -> Dict[str, Any]:
+        """Load the LoxAPP3.json structure file. Requires prior authentication."""
+        if not self._jwt:
+            raise LoxoneAuthError("Not authenticated. Call authenticate() first.")
+
+        try:
+            status, payload = await self._get_json("/data/LoxAPP3.json")
+            if status != 200:
+                raise LoxoneRequestError(f"Failed to load structure (HTTP {status})")
+
+            # Try to extract structure from LL.value first, then fall back to top-level payload
+            structure = self._extract_ll_value(payload)
+            if structure is None:
+                structure = payload
+
+            if not isinstance(structure, dict):
+                raise LoxoneRequestError(f"Unexpected structure type: {type(structure)}")
+
+            return structure
+        except Exception as err:
+            log.error("Error loading structure: %s", err)
+            raise
 
 
 # Simple manual test helper:

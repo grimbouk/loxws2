@@ -2,15 +2,12 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_PORT, CONF_USERNAME
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
-from homeassistant.helpers.importlib import async_import_module
-from homeassistant.helpers.typing import ConfigType
 
 from loxone_api import DEFAULT_PORT, DEFAULT_TLS_PORT, LoxoneClient
 
@@ -20,7 +17,7 @@ from .coordinator import LoxoneCoordinator
 _LOGGER = logging.getLogger(__name__)
 
 
-async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
+async def async_setup(hass: HomeAssistant, config) -> bool:
     """Set up the integration via YAML (not supported)."""
 
     return True
@@ -63,9 +60,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         raise ConfigEntryNotReady from err
 
     hass.data[DOMAIN][entry.entry_id] = coordinator
-    await asyncio.gather(
-        *(async_import_module(hass, f"{__name__}.{platform}") for platform in PLATFORMS)
-    )
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
 

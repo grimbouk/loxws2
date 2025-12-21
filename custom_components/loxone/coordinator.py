@@ -9,7 +9,6 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 
 from loxone_api import LoxoneClient, LoxoneControl, LoxoneState
-from loxone_api.const import DEFAULT_STRUCT_PATH
 
 from .const import DOMAIN
 
@@ -79,18 +78,9 @@ class LoxoneCoordinator:
         """Load controls from the LoxAPP3 structure file."""
 
         try:
-            status, payload = await self.client._get_json(DEFAULT_STRUCT_PATH)
+            structure = await self.client.load_structure()
         except Exception as err:
             _LOGGER.error("Unable to fetch Loxone structure: %s", err)
-            return {}
-
-        if status != 200:
-            _LOGGER.error("Loxone structure request failed with HTTP %s", status)
-            return {}
-
-        structure = payload.get("LL", {}).get("value", payload)
-        if not isinstance(structure, dict):
-            _LOGGER.error("Unexpected structure payload: %s", structure)
             return {}
 
         rooms = {
