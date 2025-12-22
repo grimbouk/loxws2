@@ -26,6 +26,7 @@ class LoxoneCoordinator:
 
     async def async_setup(self) -> None:
         """Initialise client and register callbacks."""
+        _LOGGER.debug("async_setup")
 
         await self.client.__aenter__()
         _LOGGER.debug("Client session initialized")
@@ -38,6 +39,7 @@ class LoxoneCoordinator:
 
     async def async_unload(self) -> None:
         """Close the client connection."""
+        _LOGGER.debug("async_unload")
 
         await self.client.__aexit__(None, None, None)
 
@@ -45,17 +47,29 @@ class LoxoneCoordinator:
         self, control_uuid: str, command: str, value: Any | None = None
     ) -> None:
         """Send a control command using the jdev endpoint."""
+        _LOGGER.debug("async_send_command")
 
         ctrl: LoxoneControl | None = self.controls.get(control_uuid)
-        # Many Loxone controls (and subcontrols) require using uuidAction for jdev commands
-        action_uuid = (ctrl.states.get("uuidAction") if ctrl else None) or control_uuid
+        details = ctrl.details if ctrl else {}
+
+        # Resolve action path robustly to avoid parent duplication
+        if "/" in control_uuid:
+            # Already composite; trust the provided path
+            action_uuid = control_uuid
+        else:
+            parent_uuid = details.get("parent_uuid")
+            subcontrol_id = details.get("subcontrol_id")
+            if parent_uuid and subcontrol_id:
+                action_uuid = f"{parent_uuid}/{subcontrol_id}"
+            else:
+                action_uuid = (ctrl.states.get("uuidAction") if ctrl else None) or control_uuid
 
         if value is None:
             path = f"sps/io/{action_uuid}/{command}"
         else:
             path = f"sps/io/{action_uuid}/{command}/{value}"
 
-        _LOGGER.debug("Sending command to %s: %s/%s (value=%s)", control_uuid, command, value, value)
+        _LOGGER.debug("Sending command to %s (resolved %s): %s/%s (value=%s)", control_uuid, action_uuid, command, value, value)
         
         try:
             payload = await self.client.jdev_get(path)
@@ -81,10 +95,21 @@ class LoxoneCoordinator:
 
     async def async_update_state(self, control_uuid: str) -> Any:
         """Fetch and cache the current state for a control."""
+        _LOGGER.debug("async_update_state")
 
         ctrl: LoxoneControl | None = self.controls.get(control_uuid)
-        # Use uuidAction when available for consistent state reads
-        read_uuid = (ctrl.states.get("uuidAction") if ctrl else None) or control_uuid
+        details = ctrl.details if ctrl else {}
+
+        # Resolve read path robustly to avoid parent duplication
+        if "/" in control_uuid:
+            read_uuid = control_uuid
+        else:
+            parent_uuid = details.get("parent_uuid")
+            subcontrol_id = details.get("subcontrol_id")
+            if parent_uuid and subcontrol_id:
+                read_uuid = f"{parent_uuid}/{subcontrol_id}"
+            else:
+                read_uuid = (ctrl.states.get("uuidAction") if ctrl else None) or control_uuid
 
         try:
             payload = await self.client.jdev_get(f"sps/io/{read_uuid}")
@@ -120,6 +145,7 @@ class LoxoneCoordinator:
 
     async def _load_controls(self) -> Dict[str, LoxoneControl]:
         """Load controls from the LoxAPP3 structure file."""
+        _LOGGER.debug("_load_controls")
 
         try:
             structure = await self.client.load_structure()
@@ -181,16 +207,22 @@ class LoxoneCoordinator:
                 name = sc_data.get("name") or sc_uuid
                 # Prefix with parent name for clarity
                 full_name = f"{parent.name} - {name}" if parent.name else name
+                # Store subcontrol with composite UUID (parent/subcontrol_id) for proper lookup
+                composite_uuid = f"{control_uuid}/{sc_uuid}"
                 sc = LoxoneControl(
-                    uuid=sc_uuid,
+                    uuid=composite_uuid,
                     name=full_name,
                     type=(sc_data.get("type") or sc_data.get("typeName") or ""),
                     room=parent.room,
                     category=parent.category,
                     states=sc_data.get("states") or {},
-                    details={**(sc_data.get("details") or {}), "parent_uuid": control_uuid},
+                    details={
+                        **(sc_data.get("details") or {}),
+                        "parent_uuid": control_uuid,
+                        "subcontrol_id": sc_uuid,
+                    },
                 )
-                controls[sc_uuid] = sc
+                controls[composite_uuid] = sc
 
         return controls
 

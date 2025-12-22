@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from typing import Any, Callable
 
 from homeassistant.core import callback
@@ -12,6 +14,8 @@ from loxone_api import LoxoneControl, LoxoneState
 
 from .const import DOMAIN
 from .coordinator import LoxoneCoordinator
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class LoxoneEntity(Entity):

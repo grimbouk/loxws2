@@ -103,6 +103,8 @@ class LoxoneLight(LoxoneEntity, LightEntity):
             return None
 
     async def async_turn_on(self, **kwargs) -> None:
+        _LOGGER.debug("async_turn_on")
+
         brightness = kwargs.get(ATTR_BRIGHTNESS)
         if brightness is not None:
             value = round(brightness / 2.55, 1)
@@ -118,6 +120,7 @@ class LoxoneLight(LoxoneEntity, LightEntity):
             await self.coordinator.async_send_command(self.control.uuid, "on")
 
     async def async_turn_off(self, **kwargs) -> None:
+        _LOGGER.debug("async_turn_off")
         _LOGGER.debug("Turning off %s", self.control.uuid)
         await self.coordinator.async_send_command(self.control.uuid, "off")
 
@@ -151,6 +154,7 @@ class LoxoneColorLight(LoxoneLight):
         return None
 
     async def async_turn_on(self, **kwargs) -> None:
+        _LOGGER.debug("async_turn_on")
         """Turn on the light with optional brightness and RGB color."""
         rgb = kwargs.get(ATTR_RGB_COLOR)
         brightness = kwargs.get(ATTR_BRIGHTNESS)
@@ -255,6 +259,7 @@ class LoxoneGroupedLight(LoxoneEntity, LightEntity):
         return None
 
     async def async_turn_on(self, **kwargs) -> None:
+        _LOGGER.debug("async_turn_on")
         rgb = kwargs.get(ATTR_RGB_COLOR)
         brightness = kwargs.get(ATTR_BRIGHTNESS)
 
@@ -279,5 +284,6 @@ class LoxoneGroupedLight(LoxoneEntity, LightEntity):
             await self.coordinator.async_send_command(c.uuid, "on")
 
     async def async_turn_off(self, **kwargs) -> None:
+        _LOGGER.debug("async_turn_off")
         for c in self.subcontrols:
             await self.coordinator.async_send_command(c.uuid, "off")

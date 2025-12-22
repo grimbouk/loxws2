@@ -19,12 +19,14 @@ _LOGGER = logging.getLogger(__name__)
 
 async def async_setup(hass: HomeAssistant, config) -> bool:
     """Set up the integration via YAML (not supported)."""
+    _LOGGER.debug("async_setup")
 
     return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Loxone from a config entry."""
+    _LOGGER.debug("async_setup_entry")
 
     hass.data.setdefault(DOMAIN, {})
 
@@ -66,6 +68,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a Loxone config entry."""
+    _LOGGER.debug("async_unload_entry")
 
     coordinator: LoxoneCoordinator = hass.data[DOMAIN][entry.entry_id]
     await coordinator.async_unload()
