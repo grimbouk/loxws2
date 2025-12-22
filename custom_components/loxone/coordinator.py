@@ -53,16 +53,15 @@ class LoxoneCoordinator:
         details = ctrl.details if ctrl else {}
 
         # Resolve action path robustly to avoid parent duplication
-        if "/" in control_uuid:
+        parent_uuid = details.get("parent_uuid")
+        subcontrol_id = details.get("subcontrol_id")
+        if parent_uuid and subcontrol_id:
+            action_uuid = f"{parent_uuid}/{subcontrol_id}"
+        elif "/" in control_uuid:
             # Already composite; trust the provided path
             action_uuid = control_uuid
         else:
-            parent_uuid = details.get("parent_uuid")
-            subcontrol_id = details.get("subcontrol_id")
-            if parent_uuid and subcontrol_id:
-                action_uuid = f"{parent_uuid}/{subcontrol_id}"
-            else:
-                action_uuid = (ctrl.states.get("uuidAction") if ctrl else None) or control_uuid
+            action_uuid = (ctrl.states.get("uuidAction") if ctrl else None) or control_uuid
 
         if value is None:
             path = f"sps/io/{action_uuid}/{command}"
@@ -101,15 +100,14 @@ class LoxoneCoordinator:
         details = ctrl.details if ctrl else {}
 
         # Resolve read path robustly to avoid parent duplication
-        if "/" in control_uuid:
+        parent_uuid = details.get("parent_uuid")
+        subcontrol_id = details.get("subcontrol_id")
+        if parent_uuid and subcontrol_id:
+            read_uuid = f"{parent_uuid}/{subcontrol_id}"
+        elif "/" in control_uuid:
             read_uuid = control_uuid
         else:
-            parent_uuid = details.get("parent_uuid")
-            subcontrol_id = details.get("subcontrol_id")
-            if parent_uuid and subcontrol_id:
-                read_uuid = f"{parent_uuid}/{subcontrol_id}"
-            else:
-                read_uuid = (ctrl.states.get("uuidAction") if ctrl else None) or control_uuid
+            read_uuid = (ctrl.states.get("uuidAction") if ctrl else None) or control_uuid
 
         try:
             payload = await self.client.jdev_get(f"sps/io/{read_uuid}")
@@ -209,6 +207,7 @@ class LoxoneCoordinator:
                 full_name = f"{parent.name} - {name}" if parent.name else name
                 # Store subcontrol with composite UUID (parent/subcontrol_id) for proper lookup
                 composite_uuid = f"{control_uuid}/{sc_uuid}"
+                subcontrol_id = sc_data.get("id") or sc_uuid
                 sc = LoxoneControl(
                     uuid=composite_uuid,
                     name=full_name,
@@ -219,7 +218,7 @@ class LoxoneCoordinator:
                     details={
                         **(sc_data.get("details") or {}),
                         "parent_uuid": control_uuid,
-                        "subcontrol_id": sc_uuid,
+                        "subcontrol_id": subcontrol_id,
                     },
                 )
                 controls[composite_uuid] = sc
